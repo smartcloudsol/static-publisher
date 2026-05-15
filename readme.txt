@@ -330,6 +330,37 @@ This plugin/workflow may integrate with the following external services, dependi
      - AWS Service Terms: https://aws.amazon.com/service-terms/
      - AWS Privacy: https://aws.amazon.com/privacy/
 
+4. **WPSuite platform connection (optional; site/workspace linking & shared features)**
+   - **When it applies:**
+     When you use **WP Admin → SmartCloud → Connect your Site to WPSuite** to link this WordPress site to a WPSuite workspace, or to switch/disconnect later.
+   - **What it’s used for:**
+     Storing and retrieving Pro feature configuration (e.g., API/chatbot/feature settings) and enabling an admin-side preview experience so you can try Pro features in WP Admin before enabling them on the live site.
+   - **What data may be sent:**
+     Minimal account/session data required for authentication, and minimal site/workspace linking data required to associate a WordPress site with a workspace (e.g., site/workspace identifiers and the site’s URL/domain).
+   - **Where it goes / how it’s called:**
+     Secure HTTPS requests from the browser to WPSuite.io services (e.g. **wpsuite.io** and **api.wpsuite.io**).
+   - **Links:**
+     - WPSuite.io Privacy Policy: https://wpsuite.io/privacy-policy
+     - WPSuite.io Terms of Use: https://wpsuite.io/terms-of-use
+
+5. **Amazon Cognito (optional; authentication for WPSuite Hub and/or protected APIs)**
+   - **When it applies:**
+     - When using the **WPSuite.io Hub**, users authenticate (sign in / sign up) before creating/selecting a workspace and linking a site.
+     - If a plugin is configured to access protected endpoints that rely on Cognito, authentication/token flows may also be used for those requests.
+   - **What it’s used for:**
+     User authentication and token-based authorization for subsequent API calls (e.g., to WPSuite.io APIs).
+   - **Links:**
+     - AWS Service Terms: https://aws.amazon.com/service-terms/
+     - AWS Privacy: https://aws.amazon.com/privacy/
+
+6. **Stripe (optional; subscription/purchase flow)**
+   - **When it applies:** Only when the user opens the optional WPSuite subscription / purchase flow in the shared admin component.
+   - **What it’s used for:** Displaying hosted pricing/subscription UI for optional paid features.
+   - **What data may be sent:** Browser/session data required by Stripe to render the hosted purchase UI and process the purchase flow.
+   - **Links:**
+     - Terms: https://stripe.com/legal/consumer
+     - Privacy: https://stripe.com/privacy
+
 == Example IAM Role Profiles ==
 
 Adjust values before use (`YOUR_BUCKET`, `YOUR_PREFIX`, `YOUR_ACCOUNT_ID`, `YOUR_DISTRIBUTION_ID`).

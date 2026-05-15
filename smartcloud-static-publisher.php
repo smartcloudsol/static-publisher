@@ -41,6 +41,7 @@ final class Plugin
     private const OPTION_KEY = 'smartcloud_static_publisher_config';
     private const OPTION_AUDIT_LOG_KEY = 'smartcloud_static_publisher_audit_log';
     private const OPTION_AUDIT_CURSOR_KEY = 'smartcloud_static_publisher_audit_cursor';
+    private const OPTION_QUEUE_MUTATION_LOCK_KEY = 'smartcloud_static_publisher_queue_mutation_lock';
     private const REST_NAMESPACE = 'smartcloud-static-publisher/v1';
 
     private static ?Plugin $instance = null;
@@ -2960,36 +2961,34 @@ final class Plugin
 
     public function withQueueMutationLock(callable $callback)
     {
-        $paths = $this->getRuntimePaths();
-        $lockPath = (string) ($paths['queueMutationLock'] ?? '');
-        if ($lockPath === '') {
-            throw new \RuntimeException('Queue mutation lock path is not available.');
-        }
-
-        $dir = dirname($lockPath);
-        wp_mkdir_p($dir);
-
         $deadline = microtime(true) + 5.0;
         $staleAfterSeconds = 30;
+        $lockKey = self::OPTION_QUEUE_MUTATION_LOCK_KEY;
+        $lockToken = wp_generate_uuid4();
 
         while (true) {
-            $handle = @fopen($lockPath, 'x');
-            if ($handle !== false) {
-                $payload = wp_json_encode(array(
-                    'pid' => function_exists('getmypid') ? getmypid() : null,
-                    'createdAt' => gmdate('c'),
-                ));
-                if (is_string($payload) && $payload !== '') {
-                    fwrite($handle, $payload);
-                }
-                fclose($handle);
+            $payload = array(
+                'token' => $lockToken,
+                'pid' => function_exists('getmypid') ? getmypid() : null,
+                'createdAt' => gmdate('c'),
+            );
+
+            if (add_option($lockKey, $payload, '', false)) {
                 break;
             }
 
-            clearstatcache(true, $lockPath);
-            $mtime = @filemtime($lockPath);
-            if (is_int($mtime) && (time() - $mtime) > $staleAfterSeconds) {
-                @unlink($lockPath);
+            $existing = get_option($lockKey);
+            $createdAt = is_array($existing)
+                ? strtotime((string) ($existing['createdAt'] ?? ''))
+                : false;
+
+            if ($createdAt !== false && (time() - $createdAt) > $staleAfterSeconds) {
+                delete_option($lockKey);
+                continue;
+            }
+
+            if (!is_array($existing)) {
+                delete_option($lockKey);
                 continue;
             }
 
@@ -3003,8 +3002,22 @@ final class Plugin
         try {
             return $callback();
         } finally {
-            @unlink($lockPath);
+            $existing = get_option($lockKey);
+            if (is_array($existing) && (($existing['token'] ?? '') === $lockToken)) {
+                delete_option($lockKey);
+            }
         }
+    }
+
+    public function readFileContents(string $path): ?string
+    {
+        $filesystem = $this->getFilesystem();
+        if (!($filesystem instanceof \WP_Filesystem_Base) || !$filesystem->exists($path)) {
+            return null;
+        }
+
+        $contents = $filesystem->get_contents($path);
+        return is_string($contents) ? $contents : null;
     }
 
     private function getFilesystem()
@@ -3018,17 +3031,6 @@ final class Plugin
         }
 
         return $wp_filesystem instanceof \WP_Filesystem_Base ? $wp_filesystem : null;
-    }
-
-    private function readFileContents(string $path): ?string
-    {
-        $filesystem = $this->getFilesystem();
-        if (!($filesystem instanceof \WP_Filesystem_Base) || !$filesystem->exists($path)) {
-            return null;
-        }
-
-        $contents = $filesystem->get_contents($path);
-        return is_string($contents) ? $contents : null;
     }
 
     public function deleteFile(string $path): bool

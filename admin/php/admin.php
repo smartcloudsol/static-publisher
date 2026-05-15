@@ -654,6 +654,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
             'success' => true,
             'deleted' => $deleted,
             'message' => sprintf(
+                /* translators: %d: number of log files deleted. */
                 __('Cleared %d log file(s).', 'smartcloud-static-publisher'),
                 $deleted
             ),
@@ -794,6 +795,14 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
             $downloadName = sanitize_file_name(basename($path));
         }
 
+        $contents = $this->plugin->readFileContents($path);
+        if (!is_string($contents)) {
+            return new WP_REST_Response(array(
+                'success' => false,
+                'message' => __('Unable to read archived log artifact.', 'smartcloud-static-publisher'),
+            ), 500);
+        }
+
         while (ob_get_level() > 0) {
             ob_end_clean();
         }
@@ -802,12 +811,10 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         header('Content-Type: ' . $this->plugin->guessAuditArtifactContentType($path));
         header('Content-Disposition: attachment; filename="' . $downloadName . '"; filename*=UTF-8\'\'' . rawurlencode($downloadName));
 
-        $size = filesize($path);
-        if (is_int($size) && $size >= 0) {
-            header('Content-Length: ' . (string) $size);
-        }
+        header('Content-Length: ' . (string) strlen($contents));
 
-        readfile($path);
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Serving a validated download response.
+        echo $contents;
         exit;
     }
 
