@@ -18,6 +18,8 @@
 
 namespace SmartCloud\WPSuite\StaticPublisher;
 
+use SmartCloud\WPSuite\StaticPublisher\Admin\Admin;
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -36,14 +38,13 @@ const VERSION = '1.0.0';
 final class Plugin
 {
     private const SLUG = 'smartcloud-static-publisher';
-    private const MENU_SLUG = 'smartcloud-static-publisher';
     private const OPTION_KEY = 'smartcloud_static_publisher_config';
     private const OPTION_AUDIT_LOG_KEY = 'smartcloud_static_publisher_audit_log';
     private const OPTION_AUDIT_CURSOR_KEY = 'smartcloud_static_publisher_audit_cursor';
     private const REST_NAMESPACE = 'smartcloud-static-publisher/v1';
 
     private static ?Plugin $instance = null;
-    private string $adminPageHook = '';
+    private ?Admin $admin = null;
 
     public static function instance(): Plugin
     {
@@ -55,8 +56,10 @@ final class Plugin
         $this->defineConstants();
         $this->includes();
 
-        add_action('admin_menu', array($this, 'registerAdminMenu'), 30);
-        add_action('admin_enqueue_scripts', array($this, 'enqueueAdminAssets'));
+        if ($this->admin instanceof Admin) {
+            $this->admin->registerHooks();
+        }
+
         add_action('rest_api_init', array($this, 'registerRestRoutes'));
         register_activation_hook(__FILE__, array($this, 'onActivation'));
     }
@@ -69,35 +72,6 @@ final class Plugin
 
         $this->writeJsonFile($paths['config'], $this->stripLocalOnlyConfigFromRuntimeConfig($this->getConfig()));
         $this->writeJsonFile($paths['queue'], array());
-    }
-
-    public function registerAdminMenu(): void
-    {
-        if (!current_user_can('manage_options')) {
-            return;
-        }
-
-        $parentSlug = defined('SMARTCLOUD_WPSUITE_SLUG') ? SMARTCLOUD_WPSUITE_SLUG : 'hub-for-wpsuiteio';
-        if (menu_page_url($parentSlug, false) === '') {
-            add_menu_page(
-                __('SmartCloud', 'smartcloud-static-publisher'),
-                __('SmartCloud', 'smartcloud-static-publisher'),
-                'manage_options',
-                $parentSlug,
-                '__return_null',
-                'dashicons-cloud',
-                56
-            );
-        }
-
-        $this->adminPageHook = (string) add_submenu_page(
-            $parentSlug,
-            __('Static Publisher', 'smartcloud-static-publisher'),
-            __('Static Publisher', 'smartcloud-static-publisher'),
-            'manage_options',
-            self::MENU_SLUG,
-            array($this, 'renderAdminPage')
-        );
     }
 
     private function defineConstants(): void
@@ -121,183 +95,18 @@ final class Plugin
         if (file_exists(SMARTCLOUD_STATIC_PUBLISHER_PATH . 'hub-loader.php')) {
             require_once SMARTCLOUD_STATIC_PUBLISHER_PATH . 'hub-loader.php';
         }
-    }
 
-    public function renderAdminPage(): void
-    {
-        if (!current_user_can('manage_options')) {
-            wp_die(esc_html__('You are not allowed to access this page.', 'smartcloud-static-publisher'));
+        if (file_exists(SMARTCLOUD_STATIC_PUBLISHER_PATH . 'admin/admin.php')) {
+            require_once SMARTCLOUD_STATIC_PUBLISHER_PATH . 'admin/admin.php';
         }
 
-        echo '<div id="smartcloud-static-publisher-admin"></div>';
-    }
-
-    public function enqueueAdminAssets(string $hook): void
-    {
-        if ($hook !== $this->adminPageHook) {
-            return;
+        if (class_exists('\SmartCloud\WPSuite\StaticPublisher\Admin\Admin')) {
+            $this->admin = new Admin($this);
         }
-
-        $scriptHandle = self::SLUG . '-admin';
-        $scriptAbsPath = plugin_dir_path(__FILE__) . 'admin/index.js';
-
-        if (!file_exists($scriptAbsPath) || !is_readable($scriptAbsPath)) {
-            wp_enqueue_style('wp-components');
-            echo '<div class="notice notice-warning"><p>' .
-                esc_html__('Static Publisher admin bundle is missing (admin/index.js). Reinstall the packaged plugin, or rebuild from source with yarn run build-wp dist in the admin project.', 'smartcloud-static-publisher') .
-                '</p></div>';
-            return;
-        }
-
-        $asset = array('dependencies' => array(), 'version' => VERSION);
-        $assetPath = plugin_dir_path(__FILE__) . 'admin/index.asset.php';
-        if (file_exists($assetPath)) {
-            $loaded = require $assetPath;
-            if (is_array($loaded)) {
-                $asset = array_merge($asset, $loaded);
-            }
-        }
-
-        $dependencies = isset($asset['dependencies']) && is_array($asset['dependencies']) ? $asset['dependencies'] : array();
-        if (!in_array('wp-i18n', $dependencies, true)) {
-            $dependencies[] = 'wp-i18n';
-        }
-        $dependencies = $this->getAdminScriptDependencies($dependencies);
-        $version = isset($asset['version']) && is_string($asset['version']) ? $asset['version'] : VERSION;
-
-        wp_enqueue_script(
-            $scriptHandle,
-            plugins_url('admin/index.js', __FILE__),
-            $dependencies,
-            $version,
-            array('strategy' => 'defer', 'in_footer' => true)
-        );
-
-        if (function_exists('wp_set_script_translations')) {
-            wp_set_script_translations(
-                $scriptHandle,
-                'smartcloud-static-publisher',
-                plugin_dir_path(__FILE__) . 'languages'
-            );
-        }
-
-        $styleAbsPath = plugin_dir_path(__FILE__) . 'admin/index.css';
-        if (file_exists($styleAbsPath) && is_readable($styleAbsPath)) {
-            wp_enqueue_style(
-                self::SLUG . '-admin-style',
-                plugins_url('admin/index.css', __FILE__),
-                array(),
-                $version
-            );
-        }
-
-        $this->enqueueMantineVendorStyle($version);
-
-        $bootstrap = array(
-            'key' => self::SLUG,
-            'version' => VERSION,
-            'restUrl' => rest_url(self::REST_NAMESPACE),
-            'nonce' => wp_create_nonce('wp_rest'),
-            'settings' => $this->getConfig(),
-            'runtime' => array(
-                'paths' => $this->getRuntimeRelativePaths(),
-            ),
-            'wpOrgCompliance' => array(
-                'supportsNodeRunner' => true,
-                'phpExecDisabled' => true,
-            ),
-        );
-
-        $inline = 'const __staticPublisherGlobal = (typeof globalThis !== "undefined") ? globalThis : window;
-__staticPublisherGlobal.WpSuite = __staticPublisherGlobal.WpSuite ?? {};
-__staticPublisherGlobal.WpSuite.plugins = __staticPublisherGlobal.WpSuite.plugins ?? {};
-__staticPublisherGlobal.WpSuite.events = __staticPublisherGlobal.WpSuite.events ?? {
-  emit: (type, detail) => window.dispatchEvent(new CustomEvent(type, { detail })),
-  on: (type, cb, opts) => window.addEventListener(type, cb, opts),
-};
-__staticPublisherGlobal.WpSuite.plugins.staticPublisher = __staticPublisherGlobal.WpSuite.plugins.staticPublisher ?? {};
-Object.assign(__staticPublisherGlobal.WpSuite.plugins.staticPublisher, ' . wp_json_encode($bootstrap) . ');
-var WpSuite = __staticPublisherGlobal.WpSuite;';
-
-        wp_add_inline_script($scriptHandle, $inline, 'before');
     }
 
     public function registerRestRoutes(): void
     {
-        register_rest_route(self::REST_NAMESPACE, '/state', array(
-            'methods' => 'GET',
-            'permission_callback' => array($this, 'canManageRead'),
-            'callback' => array($this, 'handleGetState'),
-        ));
-
-        register_rest_route(self::REST_NAMESPACE, '/config', array(
-            array(
-                'methods' => 'GET',
-                'permission_callback' => array($this, 'canManageRead'),
-                'callback' => array($this, 'handleGetConfig'),
-            ),
-            array(
-                'methods' => 'POST',
-                'permission_callback' => array($this, 'canManageWrite'),
-                'callback' => array($this, 'handleSaveConfig'),
-            ),
-        ));
-
-        register_rest_route(self::REST_NAMESPACE, '/jobs', array(
-            'methods' => 'POST',
-            'permission_callback' => array($this, 'canManageWrite'),
-            'callback' => array($this, 'handleQueueJob'),
-        ));
-
-        register_rest_route(self::REST_NAMESPACE, '/jobs/(?P<id>[a-zA-Z0-9-]+)', array(
-            'methods' => 'DELETE',
-            'permission_callback' => array($this, 'canManageWrite'),
-            'callback' => array($this, 'handleDeleteJob'),
-        ));
-
-        register_rest_route(self::REST_NAMESPACE, '/jobs/(?P<id>[a-zA-Z0-9-]+)/download-config', array(
-            'methods' => 'GET',
-            'permission_callback' => array($this, 'canManageRead'),
-            'callback' => array($this, 'handleDownloadJobConfig'),
-        ));
-
-        register_rest_route(self::REST_NAMESPACE, '/jobs/current/stop', array(
-            'methods' => 'POST',
-            'permission_callback' => array($this, 'canManageWrite'),
-            'callback' => array($this, 'handleStopCurrentJob'),
-        ));
-
-        register_rest_route(self::REST_NAMESPACE, '/logs', array(
-            array(
-                'methods' => 'GET',
-                'permission_callback' => array($this, 'canManageRead'),
-                'callback' => array($this, 'handleGetLogs'),
-            ),
-            array(
-                'methods' => 'DELETE',
-                'permission_callback' => array($this, 'canManageWrite'),
-                'callback' => array($this, 'handleClearLogs'),
-            ),
-        ));
-
-        register_rest_route(self::REST_NAMESPACE, '/dirs', array(
-            'methods' => 'GET',
-            'permission_callback' => array($this, 'canManageRead'),
-            'callback' => array($this, 'handleBrowseDirs'),
-        ));
-
-        register_rest_route(self::REST_NAMESPACE, '/audit', array(
-            'methods' => 'GET',
-            'permission_callback' => array($this, 'canManageRead'),
-            'callback' => array($this, 'handleGetAuditLog'),
-        ));
-
-        register_rest_route(self::REST_NAMESPACE, '/audit/artifacts/download', array(
-            'methods' => 'GET',
-            'permission_callback' => array($this, 'canManageRead'),
-            'callback' => array($this, 'handleDownloadAuditArtifact'),
-        ));
-
         register_rest_route(self::REST_NAMESPACE, '/change-tokens', array(
             'methods' => 'POST',
             'permission_callback' => array($this, 'canReadChangeTokens'),
@@ -305,24 +114,9 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         ));
     }
 
-    public function canManage(): bool
-    {
-        return $this->canManageWrite();
-    }
-
-    public function canManageRead(): bool
-    {
-        return current_user_can('manage_options');
-    }
-
-    public function canManageWrite(): bool
-    {
-        return current_user_can('manage_options');
-    }
-
     public function canReadChangeTokens(\WP_REST_Request $request): bool
     {
-        if ($this->canManageRead()) {
+        if (current_user_can('manage_options')) {
             return true;
         }
 
@@ -370,572 +164,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         ), 200);
     }
 
-    public function handleGetState(): \WP_REST_Response
-    {
-        $this->ingestRuntimeAuditEvents();
-        $paths = $this->getRuntimePaths();
-        $currentRun = $this->sanitizeJobForState($this->readJsonFile($paths['currentRun']));
-        $currentProgress = $this->readJsonFile($paths['currentProgress']);
-        $currentCrawlEvent = $this->readJsonFile($paths['currentCrawlEvent']);
-        $lastRun = $this->sanitizeJobForState($this->readJsonFile($paths['lastRun']));
-        $queue = $this->readQueue();
-        $storedConfig = get_option(self::OPTION_KEY, null);
-        $state = array(
-            'config' => $this->getResolvedConfig(),
-            'hasSavedConfiguration' => is_array($storedConfig),
-            'currentRun' => $currentRun,
-            'currentProgress' => is_array($currentProgress) ? $currentProgress : null,
-            'currentCrawlEvent' => is_array($currentCrawlEvent) ? $currentCrawlEvent : null,
-            'lastRun' => $lastRun,
-            'schedulerState' => $this->readJsonFile($paths['schedulerState']),
-            'deployDiff' => $this->readJsonFile($paths['deployDiff']),
-            'lockActive' => file_exists($paths['lock']),
-            'queueLength' => count($queue),
-            'queueItems' => array_map(array($this, 'sanitizeJobForState'), $queue),
-            'availableLogs' => $this->listLogFiles(),
-            'stopRequest' => $this->getActiveStopRequest($currentRun),
-            'serverDiagnostics' => $this->getServerDiagnostics(),
-        );
-
-        return new \WP_REST_Response($state, 200);
-    }
-
-    public function handleGetConfig(): \WP_REST_Response
-    {
-        return new \WP_REST_Response(array('config' => $this->getResolvedConfig()), 200);
-    }
-
-    public function handleSaveConfig(\WP_REST_Request $request): \WP_REST_Response
-    {
-        $payload = $request->get_json_params();
-        $data = is_array($payload) ? $payload : array();
-        $config = $this->sanitizeConfig($data);
-        $resolvedConfig = $this->getResolvedConfig($config);
-
-        $persistProConfigRemotely = strtolower((string) $request->get_header('x-wpsuite-pro-config')) === 'remote';
-        $storedConfig = $this->stripRuntimeOnlyConfigFromWpStorage($config);
-        if ($persistProConfigRemotely) {
-            $storedConfig = $this->stripProConfigFromWpStorage($storedConfig);
-        }
-
-        update_option(self::OPTION_KEY, $storedConfig, false);
-
-        $paths = $this->getRuntimePaths();
-        wp_mkdir_p($paths['runtime']);
-        $this->writeJsonFile($paths['config'], $this->stripLocalOnlyConfigFromRuntimeConfig($resolvedConfig));
-
-        return new \WP_REST_Response(array(
-            'success' => true,
-            'config' => $resolvedConfig,
-            'message' => __('Configuration saved.', 'smartcloud-static-publisher'),
-        ), 200);
-    }
-
-    public function handleQueueJob(\WP_REST_Request $request): \WP_REST_Response
-    {
-        $payload = $request->get_json_params();
-        $data = is_array($payload) ? $payload : array();
-
-        $command = isset($data['command']) ? sanitize_text_field((string) $data['command']) : '';
-        $allowedCommands = array('publish', 'crawl', 'deploy', 'invalidate', 'retry-timeouts', 'url');
-        $allowedCrawlModes = array('full', 'incremental');
-        $defaultCrawlMode = $this->getPreferredDefaultCrawlMode();
-
-        if (!in_array($command, $allowedCommands, true)) {
-            return new \WP_REST_Response(array(
-                'success' => false,
-                'message' => __('Invalid command.', 'smartcloud-static-publisher'),
-            ), 400);
-        }
-
-        $crawlMode = isset($data['crawlMode']) ? sanitize_text_field((string) $data['crawlMode']) : $defaultCrawlMode;
-        if (!in_array($crawlMode, $allowedCrawlModes, true)) {
-            $crawlMode = $defaultCrawlMode;
-        }
-        if (!in_array($command, array('publish', 'crawl'), true)) {
-            $crawlMode = 'full';
-        }
-        if ($crawlMode === 'incremental' && !$this->hasActiveWpSuiteSubscription()) {
-            return new \WP_REST_Response(array(
-                'success' => false,
-                'message' => __('Incremental crawl requires an active WPSuite subscription.', 'smartcloud-static-publisher'),
-            ), 403);
-        }
-
-        $url = '';
-        if ($command === 'url') {
-            $url = isset($data['url']) ? sanitize_text_field((string) $data['url']) : '';
-            if ($url === '') {
-                return new \WP_REST_Response(array(
-                    'success' => false,
-                    'message' => __('URL path is required for the url command.', 'smartcloud-static-publisher'),
-                ), 400);
-            }
-        }
-
-        $deploymentProfile = isset($data['deploymentProfile'])
-            ? $this->sanitizeDeploymentProfileName($data['deploymentProfile'])
-            : '';
-        if (!in_array($command, array('publish', 'deploy', 'invalidate'), true)) {
-            $deploymentProfile = '';
-        }
-
-        $awsCredCommands = array('publish', 'deploy', 'invalidate');
-        $awsTempCreds = null;
-        if (in_array($command, $awsCredCommands, true) && isset($data['awsTempCreds']) && is_array($data['awsTempCreds'])) {
-            $sanitizedCreds = $this->sanitizeAwsTempCreds($data['awsTempCreds']);
-            $hasAnyCred = !empty($sanitizedCreds['accessKeyId']) || !empty($sanitizedCreds['secretAccessKey']) || !empty($sanitizedCreds['sessionToken']);
-            if ($hasAnyCred && (empty($sanitizedCreds['accessKeyId']) || empty($sanitizedCreds['secretAccessKey']))) {
-                return new \WP_REST_Response(array(
-                    'success' => false,
-                    'message' => __('Temp AWS creds require both access key ID and secret access key.', 'smartcloud-static-publisher'),
-                ), 400);
-            }
-            if (!empty($sanitizedCreds['accessKeyId']) || !empty($sanitizedCreds['secretAccessKey']) || !empty($sanitizedCreds['sessionToken'])) {
-                $awsTempCreds = $sanitizedCreds;
-            }
-        }
-
-        $paths = $this->getRuntimePaths();
-        wp_mkdir_p($paths['runtime']);
-        $resolvedConfig = $this->getResolvedConfig();
-        if ($deploymentProfile !== '' && empty($resolvedConfig['deploymentProfiles'][$deploymentProfile])) {
-            return new \WP_REST_Response(array(
-                'success' => false,
-                'message' => __('Unknown deployment profile.', 'smartcloud-static-publisher'),
-            ), 400);
-        }
-        $this->writeJsonFile($paths['config'], $this->stripLocalOnlyConfigFromRuntimeConfig($resolvedConfig));
-        $job = array(
-            'id' => wp_generate_uuid4(),
-            'command' => $command,
-            'enqueueSource' => 'manual',
-            'url' => $url,
-            'wpsuite' => $this->getWpSuiteIdentityForJobs(),
-            'status' => 'queued',
-            'createdAt' => gmdate('c'),
-            'createdBy' => get_current_user_id(),
-        );
-        if (in_array($command, array('publish', 'crawl'), true)) {
-            $job['crawlMode'] = $crawlMode;
-        }
-        if ($deploymentProfile !== '') {
-            $job['deploymentProfile'] = $deploymentProfile;
-        }
-        if (is_array($awsTempCreds)) {
-            $job['awsTempCreds'] = $awsTempCreds;
-        }
-
-        try {
-            $queueLength = $this->withQueueMutationLock(function () use ($paths, $job) {
-                $queue = $this->readQueue();
-                $queue[] = $job;
-                $this->writeJsonFile($paths['queue'], array_values($queue));
-                return count($queue);
-            });
-        } catch (\RuntimeException $error) {
-            return new \WP_REST_Response(array(
-                'success' => false,
-                'message' => __('Queue is busy. Please try again in a moment.', 'smartcloud-static-publisher'),
-            ), 409);
-        }
-
-        $this->appendAuditLogEntry(array(
-            'eventType' => 'job-created',
-            'status' => 'success',
-            'actorSource' => 'wp-admin',
-            'actorUserId' => get_current_user_id(),
-            'jobId' => (string) $job['id'],
-            'command' => (string) $job['command'],
-            'message' => __('Job queued from admin UI.', 'smartcloud-static-publisher'),
-            'details' => array(
-                'queueLength' => $queueLength,
-                'usesTempAwsCreds' => is_array($awsTempCreds),
-                'crawlMode' => $crawlMode,
-                'deploymentProfile' => $deploymentProfile,
-                'url' => $url,
-            ),
-        ));
-
-        return new \WP_REST_Response(array(
-            'success' => true,
-            'job' => $this->sanitizeJobForState($job),
-            'queueLength' => $queueLength,
-            'message' => __('Job queued. External runner can pick it from runtime queue.json.', 'smartcloud-static-publisher'),
-        ), 200);
-    }
-
-    public function handleDeleteJob(\WP_REST_Request $request): \WP_REST_Response
-    {
-        $jobId = sanitize_text_field((string) $request->get_param('id'));
-        if ($jobId === '') {
-            return new \WP_REST_Response(array(
-                'success' => false,
-                'message' => __('Invalid job id.', 'smartcloud-static-publisher'),
-            ), 400);
-        }
-
-        $deletedJob = null;
-        $paths = $this->getRuntimePaths();
-
-        try {
-            $queueLength = $this->withQueueMutationLock(function () use ($jobId, $paths, &$deletedJob) {
-                $queue = $this->readQueue();
-                $nextQueue = array();
-
-                foreach ($queue as $job) {
-                    if (!is_array($job)) {
-                        continue;
-                    }
-                    $id = isset($job['id']) ? sanitize_text_field((string) $job['id']) : '';
-                    if ($id !== '' && $id === $jobId && $deletedJob === null) {
-                        $deletedJob = $job;
-                        continue;
-                    }
-                    $nextQueue[] = $job;
-                }
-
-                if (!is_array($deletedJob)) {
-                    return null;
-                }
-
-                $this->writeJsonFile($paths['queue'], array_values($nextQueue));
-                return count($nextQueue);
-            });
-        } catch (\RuntimeException $error) {
-            return new \WP_REST_Response(array(
-                'success' => false,
-                'message' => __('Queue is busy. Please try again in a moment.', 'smartcloud-static-publisher'),
-            ), 409);
-        }
-
-        if (!is_array($deletedJob)) {
-            return new \WP_REST_Response(array(
-                'success' => false,
-                'message' => __('Queued job not found.', 'smartcloud-static-publisher'),
-            ), 404);
-        }
-
-        $this->appendAuditLogEntry(array(
-            'eventType' => 'job-deleted',
-            'status' => 'success',
-            'actorSource' => 'wp-admin',
-            'actorUserId' => get_current_user_id(),
-            'jobId' => (string) ($deletedJob['id'] ?? $jobId),
-            'command' => isset($deletedJob['command']) ? (string) $deletedJob['command'] : '',
-            'message' => __('Queued job deleted from admin UI.', 'smartcloud-static-publisher'),
-            'details' => array(
-                'queueLength' => $queueLength,
-            ),
-        ));
-
-        return new \WP_REST_Response(array(
-            'success' => true,
-            'job' => $this->sanitizeJobForState($deletedJob),
-            'queueLength' => $queueLength,
-            'message' => __('Queued job deleted.', 'smartcloud-static-publisher'),
-        ), 200);
-    }
-
-    public function handleDownloadJobConfig(\WP_REST_Request $request): \WP_REST_Response
-    {
-        $jobId = sanitize_text_field((string) $request->get_param('id'));
-        if ($jobId === '') {
-            return new \WP_REST_Response(array(
-                'success' => false,
-                'message' => __('Invalid job id.', 'smartcloud-static-publisher'),
-            ), 400);
-        }
-
-        $job = $this->findQueuedJobById($jobId);
-        if (!is_array($job)) {
-            return new \WP_REST_Response(array(
-                'success' => false,
-                'message' => __('Queued job not found.', 'smartcloud-static-publisher'),
-            ), 404);
-        }
-
-        $payload = $this->buildJobDownloadPayload($job, $this->stripLocalOnlyConfigFromRuntimeConfig($this->getConfig()));
-
-        return new \WP_REST_Response(array(
-            'success' => true,
-            'fileName' => 'static-publisher-job-' . $jobId . '.json',
-            'content' => $payload,
-        ), 200);
-    }
-
-    public function handleStopCurrentJob(\WP_REST_Request $request): \WP_REST_Response
-    {
-        $paths = $this->getRuntimePaths();
-        $currentRun = $this->sanitizeJobForState($this->readJsonFile($paths['currentRun']));
-
-        if (!is_array($currentRun) || (($currentRun['status'] ?? '') !== 'running') || empty($currentRun['id'])) {
-            return new \WP_REST_Response(array(
-                'success' => false,
-                'message' => __('There is no active running job to stop.', 'smartcloud-static-publisher'),
-            ), 409);
-        }
-
-        $existing = $this->getActiveStopRequest($currentRun);
-        if (is_array($existing)) {
-            return new \WP_REST_Response(array(
-                'success' => true,
-                'alreadyRequested' => true,
-                'message' => __('Stop is already requested. The runner will stop the job when the current step exits and leave it out of the queue.', 'smartcloud-static-publisher'),
-            ), 200);
-        }
-
-        $user = wp_get_current_user();
-        $this->writeJsonFile((string) ($paths['stopRequest'] ?? ''), array(
-            'requestedAt' => gmdate('c'),
-            'targetJobId' => sanitize_text_field((string) ($currentRun['id'] ?? '')),
-            'targetJobCommand' => sanitize_text_field((string) ($currentRun['command'] ?? '')),
-            'mode' => 'stop',
-            'requestedByUserId' => get_current_user_id() ?: null,
-            'requestedByLogin' => $user instanceof \WP_User ? sanitize_text_field((string) $user->user_login) : '',
-        ));
-
-        return new \WP_REST_Response(array(
-            'success' => true,
-            'message' => __('Stop requested. The queue runner will stop the active step and leave the job out of the queue.', 'smartcloud-static-publisher'),
-        ), 200);
-    }
-
-    public function handleGetLogs(\WP_REST_Request $request): \WP_REST_Response
-    {
-        $file = trim((string) $request->get_param('file'));
-        $full = rest_sanitize_boolean($request->get_param('full'));
-        $logs = $this->listLogFiles();
-
-        if ($file === '') {
-            return new \WP_REST_Response(array('files' => $logs), 200);
-        }
-
-        if (!in_array($file, $logs, true)) {
-            return new \WP_REST_Response(array(
-                'success' => false,
-                'message' => __('Log file not found.', 'smartcloud-static-publisher'),
-            ), 404);
-        }
-
-        $path = $this->resolveLogFilePath($file);
-        $preview = array(
-            'contents' => '',
-            'truncated' => false,
-            'fileSize' => 0,
-            'returnedSize' => 0,
-            'limit' => 0,
-        );
-        if (is_string($path) && file_exists($path) && is_readable($path)) {
-            $preview = $this->readLogContents($path, $file, $full);
-        }
-
-        return new \WP_REST_Response(array(
-            'file' => $file,
-            'contents' => (string) $preview['contents'],
-            'truncated' => !empty($preview['truncated']),
-            'fileSize' => (int) $preview['fileSize'],
-            'returnedSize' => (int) $preview['returnedSize'],
-            'limit' => (int) $preview['limit'],
-        ), 200);
-    }
-
-    public function handleClearLogs(\WP_REST_Request $request): \WP_REST_Response
-    {
-        $paths = $this->getRuntimePaths();
-        $currentRun = $this->sanitizeJobForState($this->readJsonFile($paths['currentRun']));
-
-        if (is_array($currentRun) && (($currentRun['status'] ?? '') === 'running')) {
-            return new \WP_REST_Response(array(
-                'success' => false,
-                'message' => __('A job is currently running. Stop the active job before clearing logs.', 'smartcloud-static-publisher'),
-            ), 409);
-        }
-
-        $logs = $this->listLogFiles();
-        if (empty($logs)) {
-            return new \WP_REST_Response(array(
-                'success' => true,
-                'deleted' => 0,
-                'message' => __('No log files to clear.', 'smartcloud-static-publisher'),
-            ), 200);
-        }
-
-        $deleted = 0;
-        foreach ($logs as $file) {
-            $path = $this->resolveLogFilePath((string) $file);
-            if (!is_string($path) || !is_file($path)) {
-                continue;
-            }
-            if ($this->deleteFile($path)) {
-                $deleted++;
-            }
-        }
-
-        return new \WP_REST_Response(array(
-            'success' => true,
-            'deleted' => $deleted,
-            'message' => sprintf(
-                /* translators: %d: number of deleted log files */
-                __('Cleared %d log file(s).', 'smartcloud-static-publisher'),
-                $deleted
-            ),
-        ), 200);
-    }
-
-    public function handleBrowseDirs(\WP_REST_Request $request): \WP_REST_Response
-    {
-        $upload = wp_get_upload_dir();
-        $storageRoot = wp_normalize_path(
-            trailingslashit($upload['basedir']) . 'smartcloud-static-publisher'
-        );
-
-        $pathParam = $request->get_param('path');
-        $relPath = is_string($pathParam) ? trim($pathParam) : '';
-
-        if ($relPath !== '') {
-            $relPath = $this->normalizeStorageRelativePath($relPath, '');
-        }
-
-        $absPath = wp_normalize_path(
-            $relPath !== '' ? $storageRoot . '/' . $relPath : $storageRoot
-        );
-
-        // Prevent path traversal: target must remain inside storageRoot
-        if (strpos(trailingslashit($absPath), trailingslashit($storageRoot)) !== 0) {
-            return new \WP_REST_Response(array('path' => '', 'dirs' => array()), 200);
-        }
-
-        $dirs = array();
-        if (is_dir($absPath)) {
-            $entries = scandir($absPath);
-            if (is_array($entries)) {
-                foreach ($entries as $entry) {
-                    if ($entry === '.' || $entry === '..') {
-                        continue;
-                    }
-                    if (is_dir($absPath . '/' . $entry)) {
-                        $dirs[] = $entry;
-                    }
-                }
-            }
-        }
-
-        sort($dirs);
-
-        return new \WP_REST_Response(array(
-            'path' => $relPath,
-            'dirs' => $dirs,
-        ), 200);
-    }
-
-    public function handleGetAuditLog(\WP_REST_Request $request): \WP_REST_Response
-    {
-        if (!$this->hasActiveWpSuiteSubscription()) {
-            return new \WP_REST_Response(array(
-                'message' => __('Audit Logs requires an active WPSuite subscription.', 'smartcloud-static-publisher'),
-            ), 403);
-        }
-
-        $this->ingestRuntimeAuditEvents();
-
-        $page = max(1, absint($request->get_param('page') ?? 1));
-        $pageSize = max(1, min(100, absint($request->get_param('pageSize') ?? 25)));
-        $eventType = sanitize_text_field((string) ($request->get_param('eventType') ?? ''));
-        $status = sanitize_text_field((string) ($request->get_param('status') ?? ''));
-        $jobId = sanitize_text_field((string) ($request->get_param('jobId') ?? ''));
-        $search = sanitize_text_field((string) ($request->get_param('search') ?? ''));
-
-        $entries = $this->getAuditLogEntries();
-        $filtered = array_values(array_filter($entries, function ($entry) use ($eventType, $status, $jobId, $search): bool {
-            if (!is_array($entry)) {
-                return false;
-            }
-
-            if ($eventType !== '' && (($entry['eventType'] ?? '') !== $eventType)) {
-                return false;
-            }
-
-            if ($status !== '' && (($entry['status'] ?? '') !== $status)) {
-                return false;
-            }
-
-            if ($jobId !== '' && (($entry['jobId'] ?? '') !== $jobId)) {
-                return false;
-            }
-
-            if ($search !== '') {
-                $needle = strtolower($search);
-                $haystack = strtolower(wp_json_encode($entry) ?: '');
-                if ($haystack === '' || strpos($haystack, $needle) === false) {
-                    return false;
-                }
-            }
-
-            return true;
-        }));
-
-        $total = count($filtered);
-        $totalPages = max(1, (int) ceil($total / $pageSize));
-        if ($page > $totalPages) {
-            $page = $totalPages;
-        }
-
-        $offset = ($page - 1) * $pageSize;
-        $items = array_slice($filtered, $offset, $pageSize);
-        $items = array_values(array_map(array($this, 'enrichAuditLogEntryForResponse'), $items));
-
-        return new \WP_REST_Response(array(
-            'items' => $items,
-            'total' => $total,
-            'page' => $page,
-            'pageSize' => $pageSize,
-            'totalPages' => $totalPages,
-        ), 200);
-    }
-
-    public function handleDownloadAuditArtifact(\WP_REST_Request $request)
-    {
-        if (!$this->hasActiveWpSuiteSubscription()) {
-            return new \WP_REST_Response(array(
-                'message' => __('Audit Logs requires an active WPSuite subscription.', 'smartcloud-static-publisher'),
-            ), 403);
-        }
-
-        $archiveKey = sanitize_file_name((string) ($request->get_param('archive') ?? ''));
-        $file = trim((string) ($request->get_param('file') ?? ''));
-        $path = $this->resolveAuditArchiveFilePath($archiveKey, $file);
-
-        if (!is_string($path) || !is_file($path) || !is_readable($path)) {
-            return new \WP_REST_Response(array(
-                'success' => false,
-                'message' => __('Archived log artifact not found.', 'smartcloud-static-publisher'),
-            ), 404);
-        }
-
-        $downloadName = sanitize_file_name($archiveKey . '-' . basename($path));
-        if ($downloadName === '') {
-            $downloadName = sanitize_file_name(basename($path));
-        }
-
-        while (ob_get_level() > 0) {
-            ob_end_clean();
-        }
-
-        nocache_headers();
-        header('Content-Type: ' . $this->guessAuditArtifactContentType($path));
-        header('Content-Disposition: attachment; filename="' . $downloadName . '"; filename*=UTF-8\'\'' . rawurlencode($downloadName));
-
-        $size = filesize($path);
-        if (is_int($size) && $size >= 0) {
-            header('Content-Length: ' . (string) $size);
-        }
-
-        readfile($path);
-        exit;
-    }
-
-    private function getConfig(): array
+    public function getConfig(): array
     {
         $stored = get_option(self::OPTION_KEY);
         if (!is_array($stored)) {
@@ -944,7 +173,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return $this->sanitizeConfig($stored);
     }
 
-    private function getResolvedConfig(?array $localConfig = null): array
+    public function getResolvedConfig(?array $localConfig = null): array
     {
         $baseConfig = is_array($localConfig) ? $this->sanitizeConfig($localConfig) : $this->getConfig();
         return $this->mergeRemotePublisherConfig($baseConfig);
@@ -1017,7 +246,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return $data;
     }
 
-    private function hasActiveWpSuiteSubscription(): bool
+    public function hasActiveWpSuiteSubscription(): bool
     {
         $identity = $this->getWpSuiteIdentityForJobs();
         $accountId = isset($identity['accountId']) ? sanitize_text_field((string) $identity['accountId']) : '';
@@ -1050,13 +279,13 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return is_array($data) && !empty($data['config']) && !empty($data['jws']);
     }
 
-    private function getPreferredDefaultCrawlMode(): string
+    public function getPreferredDefaultCrawlMode(): string
     {
         $identity = $this->getWpSuiteIdentityForJobs();
         return !empty($identity['subscriber']) ? 'incremental' : 'full';
     }
 
-    private function sanitizeConfig(array $input): array
+    public function sanitizeConfig(array $input): array
     {
         $rewriteMode = isset($input['urlRewriteMode']) ? sanitize_text_field((string) $input['urlRewriteMode']) : 'relative';
         if (!in_array($rewriteMode, array('absolute', 'root-relative', 'relative'), true)) {
@@ -1138,7 +367,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return $this->sanitizeOrigin($raw);
     }
 
-    private function sanitizeDeploymentProfileName($value): string
+    public function sanitizeDeploymentProfileName($value): string
     {
         $name = sanitize_text_field((string) $value);
         $name = preg_replace('/[^a-zA-Z0-9._-]/', '', $name);
@@ -1248,7 +477,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return is_string($raw) ? $raw : '';
     }
 
-    private function sanitizeAwsTempCreds(array $value): array
+    public function sanitizeAwsTempCreds(array $value): array
     {
         return array(
             'accessKeyId' => $this->sanitizeAwsEnvValue($value['accessKeyId'] ?? ''),
@@ -1257,7 +486,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         );
     }
 
-    private function sanitizeJobForState($job)
+    public function sanitizeJobForState($job)
     {
         if (!is_array($job)) {
             return $job;
@@ -1397,9 +626,6 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         $allowed = array(
             'sdk-upload-delete',
             'sdk-upload-only',
-            'aws-s3-sync-delete',
-            'aws-s3-sync',
-            'aws-s3-cp-recursive',
         );
         return in_array($mode, $allowed, true) ? $mode : 'sdk-upload-delete';
     }
@@ -1465,7 +691,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         );
     }
 
-    private function stripProConfigFromWpStorage(array $config): array
+    public function stripProConfigFromWpStorage(array $config): array
     {
         $stripped = $config;
         $stripped['scheduler'] = array(
@@ -1478,7 +704,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return $stripped;
     }
 
-    private function stripRuntimeOnlyConfigFromWpStorage(array $config): array
+    public function stripRuntimeOnlyConfigFromWpStorage(array $config): array
     {
         $stripped = $config;
         unset($stripped['wpsuite']);
@@ -1522,7 +748,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return 'https://api.wpsuite.io';
     }
 
-    private function getWpSuiteIdentityForJobs(): array
+    public function getWpSuiteIdentityForJobs(): array
     {
         $settings = $this->getWpSuiteSiteSettings();
 
@@ -1634,7 +860,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
             );
         }
 
-        if (in_array($kind, array('posts-archive', 'term-archive', 'post-type-archive'), true)) {
+        if (in_array($kind, array('posts-archive', 'term-archive', 'post-type-archive', 'author-archive', 'date-archive'), true)) {
             $archiveItem = $this->buildArchiveChangeTokenItem($url, $resolved, $globalSignature);
             if (is_array($archiveItem)) {
                 return $archiveItem;
@@ -1759,6 +985,108 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
                 'supported' => true,
                 'token' => hash('sha256', (string) wp_json_encode($payload)),
                 'tokenSource' => $tokenSource !== '' ? $tokenSource : 'wp-taxonomy-archive',
+                'postId' => null,
+                'dependencyPostIds' => $listing['postIds'],
+                'reason' => null,
+            );
+        }
+
+        if ($kind === 'author-archive') {
+            if (!isset($resolved['author']) || !($resolved['author'] instanceof \WP_User)) {
+                return null;
+            }
+
+            /** @var \WP_User $author */
+            $author = $resolved['author'];
+            $profilePayload = array(
+                'displayName' => (string) $author->display_name,
+                'userUrl' => (string) $author->user_url,
+                'nickname' => (string) get_user_meta($author->ID, 'nickname', true),
+                'firstName' => (string) get_user_meta($author->ID, 'first_name', true),
+                'lastName' => (string) get_user_meta($author->ID, 'last_name', true),
+                'description' => (string) get_user_meta($author->ID, 'description', true),
+            );
+
+            $listing = $this->buildArchivePostQuerySignature(array(
+                'post_type' => 'post',
+                'paged' => $paged,
+                'author' => (int) $author->ID,
+            ));
+
+            $payload = array(
+                'url' => $url,
+                'archive' => array(
+                    'kind' => 'author-archive',
+                    'paged' => $paged,
+                    'authorId' => (int) $author->ID,
+                    'nicename' => (string) $author->user_nicename,
+                    'profileHash' => hash('sha256', (string) wp_json_encode($profilePayload)),
+                ),
+                'listing' => $listing,
+                'global' => $globalSignature,
+            );
+
+            return array(
+                'url' => $url,
+                'supported' => true,
+                'token' => hash('sha256', (string) wp_json_encode($payload)),
+                'tokenSource' => $tokenSource !== '' ? $tokenSource : 'wp-author-archive',
+                'postId' => null,
+                'dependencyPostIds' => $listing['postIds'],
+                'reason' => null,
+            );
+        }
+
+        if ($kind === 'date-archive') {
+            $dateType = sanitize_key((string) ($resolved['dateType'] ?? ''));
+            $year = absint($resolved['year'] ?? 0);
+            $month = absint($resolved['month'] ?? 0);
+            $day = absint($resolved['day'] ?? 0);
+
+            if (!in_array($dateType, array('year', 'month', 'day'), true) || $year <= 0) {
+                return null;
+            }
+
+            $queryArgs = array(
+                'post_type' => 'post',
+                'paged' => $paged,
+                'year' => $year,
+            );
+
+            if (in_array($dateType, array('month', 'day'), true)) {
+                if ($month < 1 || $month > 12) {
+                    return null;
+                }
+                $queryArgs['monthnum'] = $month;
+            }
+
+            if ($dateType === 'day') {
+                if ($day < 1 || !checkdate($month, $day, $year)) {
+                    return null;
+                }
+                $queryArgs['day'] = $day;
+            }
+
+            $listing = $this->buildArchivePostQuerySignature($queryArgs);
+            $payload = array(
+                'url' => $url,
+                'archive' => array(
+                    'kind' => 'date-archive',
+                    'dateType' => $dateType,
+                    'paged' => $paged,
+                    'year' => $year,
+                    'month' => $month > 0 ? $month : null,
+                    'day' => $day > 0 ? $day : null,
+                ),
+                'listing' => $listing,
+                'global' => $globalSignature,
+            );
+
+            return array(
+                'url' => $url,
+                'supported' => true,
+                'token' => hash('sha256', (string) wp_json_encode($payload)),
+                'tokenSource' => $tokenSource !== '' ? $tokenSource : 'wp-date-archive',
                 'postId' => null,
                 'dependencyPostIds' => $listing['postIds'],
                 'reason' => null,
@@ -1893,6 +1221,16 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
             return $taxonomyArchive;
         }
 
+        $authorArchive = $this->resolveTrackedAuthorArchiveForUrl($normalizedUrl);
+        if ($authorArchive !== null) {
+            return $authorArchive;
+        }
+
+        $dateArchive = $this->resolveTrackedDateArchiveForUrl($normalizedUrl);
+        if ($dateArchive !== null) {
+            return $dateArchive;
+        }
+
         $postId = url_to_postid($normalizedUrl);
         if ($postId > 0) {
             $post = get_post($postId);
@@ -1961,6 +1299,119 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return null;
     }
 
+    private function resolveTrackedAuthorArchiveForUrl(string $normalizedUrl): ?array
+    {
+        $slug = $this->extractArchiveSlugFromUrl($normalizedUrl);
+        if ($slug === null || $slug === '') {
+            return null;
+        }
+
+        $author = get_user_by('slug', $slug);
+        if (!($author instanceof \WP_User)) {
+            return null;
+        }
+
+        $authorLink = get_author_posts_url((int) $author->ID, (string) $author->user_nicename);
+        if (!is_string($authorLink) || $authorLink === '') {
+            return null;
+        }
+
+        $paged = $this->matchPaginatedArchiveUrl($normalizedUrl, $authorLink);
+        if ($paged === null) {
+            return null;
+        }
+
+        return array(
+            'kind' => 'author-archive',
+            'tokenSource' => 'wp-author-archive',
+            'paged' => $paged,
+            'author' => $author,
+        );
+    }
+
+    private function resolveTrackedDateArchiveForUrl(string $normalizedUrl): ?array
+    {
+        $segments = $this->extractArchivePathSegments($normalizedUrl);
+        $count = count($segments);
+
+        if ($count >= 3) {
+            $yearSegment = (string) $segments[$count - 3];
+            $monthSegment = (string) $segments[$count - 2];
+            $daySegment = (string) $segments[$count - 1];
+
+            if (preg_match('/^\d{4}$/', $yearSegment) && ctype_digit($monthSegment) && ctype_digit($daySegment)) {
+                $year = (int) $yearSegment;
+                $month = (int) $monthSegment;
+                $day = (int) $daySegment;
+                if ($month >= 1 && $month <= 12 && checkdate($month, $day, $year)) {
+                    $archiveUrl = get_day_link($year, $month, $day);
+                    if (is_string($archiveUrl) && $archiveUrl !== '') {
+                        $paged = $this->matchPaginatedArchiveUrl($normalizedUrl, $archiveUrl);
+                        if ($paged !== null) {
+                            return array(
+                                'kind' => 'date-archive',
+                                'tokenSource' => 'wp-date-archive-day',
+                                'dateType' => 'day',
+                                'paged' => $paged,
+                                'year' => $year,
+                                'month' => $month,
+                                'day' => $day,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        if ($count >= 2) {
+            $yearSegment = (string) $segments[$count - 2];
+            $monthSegment = (string) $segments[$count - 1];
+
+            if (preg_match('/^\d{4}$/', $yearSegment) && ctype_digit($monthSegment)) {
+                $year = (int) $yearSegment;
+                $month = (int) $monthSegment;
+                if ($month >= 1 && $month <= 12) {
+                    $archiveUrl = get_month_link($year, $month);
+                    if (is_string($archiveUrl) && $archiveUrl !== '') {
+                        $paged = $this->matchPaginatedArchiveUrl($normalizedUrl, $archiveUrl);
+                        if ($paged !== null) {
+                            return array(
+                                'kind' => 'date-archive',
+                                'tokenSource' => 'wp-date-archive-month',
+                                'dateType' => 'month',
+                                'paged' => $paged,
+                                'year' => $year,
+                                'month' => $month,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        if ($count >= 1) {
+            $yearSegment = (string) $segments[$count - 1];
+            if (preg_match('/^\d{4}$/', $yearSegment)) {
+                $year = (int) $yearSegment;
+                $archiveUrl = get_year_link($year);
+                if (is_string($archiveUrl) && $archiveUrl !== '') {
+                    $paged = $this->matchPaginatedArchiveUrl($normalizedUrl, $archiveUrl);
+                    if ($paged !== null) {
+                        return array(
+                            'kind' => 'date-archive',
+                            'tokenSource' => 'wp-date-archive-year',
+                            'dateType' => 'year',
+                            'paged' => $paged,
+                            'year' => $year,
+                        );
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
     private function resolveTrackedTaxonomyArchiveForUrl(string $normalizedUrl): ?array
     {
         $slug = $this->extractArchiveSlugFromUrl($normalizedUrl);
@@ -2002,9 +1453,19 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
 
     private function extractArchiveSlugFromUrl(string $normalizedUrl): ?string
     {
+        $segments = $this->extractArchivePathSegments($normalizedUrl);
+        if (empty($segments)) {
+            return null;
+        }
+
+        return sanitize_title(urldecode((string) end($segments)));
+    }
+
+    private function extractArchivePathSegments(string $normalizedUrl): array
+    {
         $parts = wp_parse_url($normalizedUrl);
         if (!is_array($parts)) {
-            return null;
+            return array();
         }
 
         $path = (string) ($parts['path'] ?? '/');
@@ -2015,11 +1476,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
             array_pop($segments);
         }
 
-        if (empty($segments)) {
-            return null;
-        }
-
-        return sanitize_title(urldecode((string) end($segments)));
+        return $segments;
     }
 
     private function matchPaginatedArchiveUrl(string $normalizedUrl, string $archiveUrl): ?int
@@ -2283,7 +1740,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         );
     }
 
-    private function findQueuedJobById(string $jobId): ?array
+    public function findQueuedJobById(string $jobId): ?array
     {
         $queue = $this->readQueue();
         foreach ($queue as $job) {
@@ -2298,24 +1755,10 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return null;
     }
 
-    private function buildJobDownloadPayload(array $job, array $config): array
+    public function buildJobDownloadPayload(array $job, array $config): array
     {
-        $bucket = sanitize_text_field((string) ($config['s3']['bucket'] ?? ''));
-        $prefix = trim($this->sanitizePathToken($config['s3']['prefix'] ?? ''), '/');
-        $distributionId = sanitize_text_field((string) ($config['cloudFront']['distributionId'] ?? ''));
-        $outputDir = trim((string) ($config['outputDir'] ?? 'export'));
-        if ($outputDir === '') {
-            $outputDir = 'export';
-        }
-
-        $s3Uri = $bucket !== ''
-            ? 's3://' . $bucket . ($prefix !== '' ? '/' . $prefix : '')
-            : 's3://<s3-bucket>/<s3-prefix>';
-
-        $distributionArg = $distributionId !== '' ? $distributionId : '<distribution-id>';
-
         $sanitizedJob = $this->sanitizeJobForState($job);
-        $manualCommands = $this->buildManualJobExecutionCommands($sanitizedJob, $outputDir, $s3Uri, $distributionArg);
+        $manualCommands = $this->buildManualJobExecutionCommands($sanitizedJob);
 
         return array(
             'generatedAt' => gmdate('c'),
@@ -2327,10 +1770,9 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
                     'This JSON is a wrapper payload. Extract the nested publisherConfig object into ./publisher.config.json before running the commands below.',
                     'Install Node.js, the @smart-cloud/publisher-exporter CLI package, and Playwright Chromium before running crawl.',
                     'Running the downloaded job locally does not mark the queued item as completed in WordPress; it is an out-of-band replay of the same instructions.',
-                    'If you deploy with AWS CLI, S3/CloudFront settings from this config are still useful as input values.',
+                    'Use the deploySdk and invalidateSdk commands below to run deploy and CDN invalidation with the same downloaded publisherConfig.',
                 ),
                 'links' => array(
-                    'awsCliInstall' => 'https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html',
                     'playwrightDocs' => 'https://playwright.dev/docs/intro',
                 ),
                 'commands' => $manualCommands,
@@ -2338,7 +1780,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         );
     }
 
-    private function buildManualJobExecutionCommands(array $job, string $outputDir, string $s3Uri, string $distributionArg): array
+    private function buildManualJobExecutionCommands(array $job): array
     {
         return array(
             'extractPublisherConfigNode' => 'node -e ' . escapeshellarg("const fs = require('node:fs'); const payload = JSON.parse(fs.readFileSync('./queued-job.json', 'utf8')); fs.writeFileSync('./publisher.config.json', JSON.stringify(payload.publisherConfig, null, 2));"),
@@ -2348,9 +1790,6 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
             'crawl' => 'PUBLISHER_CONFIG=./publisher.config.json npx @smart-cloud/publisher-exporter crawl',
             'deploySdk' => 'PUBLISHER_CONFIG=./publisher.config.json npx @smart-cloud/publisher-exporter deploy',
             'invalidateSdk' => 'PUBLISHER_CONFIG=./publisher.config.json npx @smart-cloud/publisher-exporter invalidate',
-            'awsS3SyncDelete' => 'aws s3 sync ./' . $outputDir . '/ ' . $s3Uri . '/ --delete',
-            'awsS3CpRecursive' => 'aws s3 cp ./' . $outputDir . '/ ' . $s3Uri . '/ --recursive',
-            'cloudFrontInvalidation' => 'aws cloudfront create-invalidation --distribution-id ' . $distributionArg . " --paths '/*'",
         );
     }
 
@@ -2447,7 +1886,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return "'" . str_replace("'", "''", $value) . "'";
     }
 
-    private function getServerDiagnostics(): array
+    public function getServerDiagnostics(): array
     {
         $node = $this->detectNodeBinary();
         $heartbeat = $this->detectQueueRunnerHeartbeat();
@@ -2586,7 +2025,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         );
     }
 
-    private function getActiveStopRequest($currentRun = null): ?array
+    public function getActiveStopRequest($currentRun = null): ?array
     {
         $paths = $this->getRuntimePaths();
         $stopRequest = $this->readJsonFile((string) ($paths['stopRequest'] ?? ''));
@@ -2885,38 +2324,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         );
     }
 
-    private function getAdminScriptDependencies(array $dependencies = array()): array
-    {
-        $vendorHandles = array(
-            'smartcloud-wpsuite-webcrypto-vendor',
-            'smartcloud-wpsuite-amplify-vendor',
-            'smartcloud-wpsuite-mantine-vendor',
-        );
-
-        foreach ($vendorHandles as $handle) {
-            if (wp_script_is($handle, 'registered') && !in_array($handle, $dependencies, true)) {
-                $dependencies[] = $handle;
-            }
-        }
-
-        return array_values(array_unique($dependencies));
-    }
-
-    private function enqueueMantineVendorStyle(string $version): void
-    {
-        if (!defined('SMARTCLOUD_WPSUITE_URL')) {
-            return;
-        }
-
-        wp_enqueue_style(
-            'smartcloud-wpsuite-mantine-vendor-style',
-            SMARTCLOUD_WPSUITE_URL . 'assets/css/mantine-vendor.css',
-            array(),
-            $version
-        );
-    }
-
-    private function getRuntimePaths(): array
+    public function getRuntimePaths(): array
     {
         $upload = wp_get_upload_dir();
         $storageRoot = trailingslashit($upload['basedir']) . 'smartcloud-static-publisher';
@@ -2945,7 +2353,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         );
     }
 
-    private function ingestRuntimeAuditEvents(): void
+    public function ingestRuntimeAuditEvents(): void
     {
         $paths = $this->getRuntimePaths();
         $auditPath = (string) ($paths['auditEvents'] ?? '');
@@ -3011,7 +2419,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         }
     }
 
-    private function getAuditLogEntries(): array
+    public function getAuditLogEntries(): array
     {
         $raw = get_option(self::OPTION_AUDIT_LOG_KEY);
         if (!is_array($raw)) {
@@ -3021,7 +2429,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return array_values(array_filter($raw, 'is_array'));
     }
 
-    private function appendAuditLogEntry(array $entry): void
+    public function appendAuditLogEntry(array $entry): void
     {
         $entries = $this->getAuditLogEntries();
         $clean = $this->sanitizeAuditLogEntry($entry);
@@ -3098,7 +2506,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return $out;
     }
 
-    private function getRuntimeRelativePaths(): array
+    public function getRuntimeRelativePaths(): array
     {
         $upload = wp_get_upload_dir();
         $config = $this->getConfig();
@@ -3109,7 +2517,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         );
     }
 
-    private function normalizeStorageRelativePath(string $value, string $fallback): string
+    public function normalizeStorageRelativePath(string $value, string $fallback): string
     {
         $candidate = str_replace('\\', '/', trim($value));
         $candidate = trim($candidate, '/');
@@ -3134,14 +2542,14 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return implode('/', $clean);
     }
 
-    private function readQueue(): array
+    public function readQueue(): array
     {
         $paths = $this->getRuntimePaths();
         $queue = $this->readJsonFile($paths['queue']);
         return is_array($queue) ? array_values($queue) : array();
     }
 
-    private function listLogFiles(): array
+    public function listLogFiles(): array
     {
         $paths = $this->getRuntimePaths();
         if (!is_dir($paths['logs'])) {
@@ -3168,7 +2576,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return $files;
     }
 
-    private function enrichAuditLogEntryForResponse(array $entry): array
+    public function enrichAuditLogEntryForResponse(array $entry): array
     {
         $artifacts = $this->listAuditArtifactsForEntry($entry);
         if (!empty($artifacts)) {
@@ -3384,7 +2792,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return $realCandidate;
     }
 
-    private function resolveAuditArchiveFilePath(string $archiveKey, string $file): ?string
+    public function resolveAuditArchiveFilePath(string $archiveKey, string $file): ?string
     {
         if ($file === '' || strpos($file, "\0") !== false) {
             return null;
@@ -3416,7 +2824,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return $realCandidate;
     }
 
-    private function guessAuditArtifactContentType(string $path): string
+    public function guessAuditArtifactContentType(string $path): string
     {
         $normalizedPath = strtolower($path);
         if (substr($normalizedPath, -3) === '.gz') {
@@ -3432,7 +2840,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return 'text/plain; charset=utf-8';
     }
 
-    private function resolveLogFilePath(string $file): ?string
+    public function resolveLogFilePath(string $file): ?string
     {
         if ($file === '' || strpos($file, "\0") !== false) {
             return null;
@@ -3463,7 +2871,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return $realCandidate;
     }
 
-    private function readJsonFile(string $path)
+    public function readJsonFile(string $path)
     {
         if (!file_exists($path) || !is_readable($path)) {
             return null;
@@ -3478,7 +2886,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return json_last_error() === JSON_ERROR_NONE ? $decoded : null;
     }
 
-    private function readLogContents(string $path, string $file, bool $full = false, int $limit = 400000): array
+    public function readLogContents(string $path, string $file, bool $full = false, int $limit = 400000): array
     {
         $raw = file_get_contents($path);
         if (!is_string($raw) || $raw === '') {
@@ -3539,7 +2947,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         );
     }
 
-    private function writeJsonFile(string $path, $data): void
+    public function writeJsonFile(string $path, $data): void
     {
         $dir = dirname($path);
         wp_mkdir_p($dir);
@@ -3550,7 +2958,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         file_put_contents($path, $encoded);
     }
 
-    private function withQueueMutationLock(callable $callback)
+    public function withQueueMutationLock(callable $callback)
     {
         $paths = $this->getRuntimePaths();
         $lockPath = (string) ($paths['queueMutationLock'] ?? '');
@@ -3623,7 +3031,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         return is_string($contents) ? $contents : null;
     }
 
-    private function deleteFile(string $path): bool
+    public function deleteFile(string $path): bool
     {
         $filesystem = $this->getFilesystem();
         if (!($filesystem instanceof \WP_Filesystem_Base) || !$filesystem->exists($path)) {

@@ -169,10 +169,10 @@ If the WordPress host cannot run Node, Playwright, or cron, you can replay a que
 
 1. In the Job Queue panel click `Download config` next to the queued job and save the file as `queued-job.json`.
 2. Extract the nested `publisherConfig` object to `publisher.config.json` using one of the commands already included in the downloaded file under `manualExecution.commands`.
-3. Install `@smart-cloud/publisher-exporter` on that machine first, or if you use a source checkout instead of the published package, run `cd exporter && npm ci && npm run build`.
+3. Install `@smart-cloud/publisher-exporter` on that machine first.
 4. Optionally edit `publisher.config.json` locally, for example to change `outputDir` to a writable local folder.
 5. Run the exact command from `manualExecution.commands.jobPosix` or `manualExecution.commands.jobPowerShell`.
-6. If you also want to deploy from your own machine, continue with the provided `deploySdk`, `invalidateSdk`, or AWS CLI commands from the same `manualExecution.commands` block.
+6. If you also want to deploy from your own machine, continue with the provided `deploySdk` and `invalidateSdk` commands from the same `manualExecution.commands` block.
 
 Important:
 
@@ -230,12 +230,9 @@ Yes. Start `publisher-exporter queue-runner` or `npx @smart-cloud/publisher-expo
 Yes. Use `Download config` next to the queued job, extract `publisherConfig` into `publisher.config.json`, then run the exact `manualExecution.commands.jobPosix` or `manualExecution.commands.jobPowerShell` command from the downloaded JSON. This replays the job outside WordPress and does not update queue state automatically.
 
 = Can I choose deploy strategy for S3? =
-Yes. Exporter config supports SDK and AWS CLI modes:
+Yes. Exporter config supports two SDK modes:
 * `sdk-upload-delete`
 * `sdk-upload-only`
-* `aws-s3-sync-delete`
-* `aws-s3-sync`
-* `aws-s3-cp-recursive`
 
 = Is deploy progress logged? =
 Yes. Deploy and invalidate now write detailed progress logs in addition to crawl logs. Use `logLevel` (`error`, `warn`, `info`, `debug`) to control verbosity.

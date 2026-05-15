@@ -2,7 +2,7 @@
 
 WP Suite Static Publisher exports a WordPress site into a fully static artifact using a Playwright-based Node.js exporter, then deploys it to S3 and invalidates CloudFront.
 
-The project now contains two coordinated parts:
+The overall Static Publisher workflow has two coordinated parts:
 
 - A WordPress plugin admin screen for configuration, status, queueing, and log viewing.
 - A Node.js exporter pipeline for crawl, rewrite, deploy, and invalidate operations.
@@ -23,15 +23,15 @@ This keeps runtime behavior deterministic and aligns with common WordPress.org s
 
 Because the exporter runs from shell (Node.js CLI), it can work against fully rendered pages and runtime-generated frontends without pushing crawl/deploy execution into PHP.
 
-The distributed WordPress plugin ZIP does not bundle the Node.js runtime or npm dependencies. Install the exporter separately as the `@smart-cloud/publisher-exporter` npm CLI package on the machine that processes queued jobs.
+This repository and the distributed WordPress plugin ZIP do not bundle the Node.js runtime or exporter source tree. Install the exporter separately as the `@smart-cloud/publisher-exporter` npm CLI package on the machine that processes queued jobs.
 
 ## Repository Layout
 
 - `smartcloud-static-publisher.php`: plugin bootstrap, admin menu, REST API, runtime file IO
 - `admin/`: React + Vite + Mantine admin app
 - `core/`: shared TypeScript package consumed by the admin app and exporter
-- `exporter/`: source for the standalone `@smart-cloud/publisher-exporter` npm CLI package
-- `scripts/`: optional helper scripts kept for custom/manual host setups
+
+The exporter source is intentionally not vendored into this repository. Use the published npm CLI package and its package page for exporter installation and runtime usage details.
 
 ## Plugin Runtime Files
 
@@ -45,21 +45,50 @@ Generated under:
 - exporter logs are written under `wp-content/uploads/smartcloud-static-publisher/<logDir>/*`
 - completed, failed, and stopped job log snapshots are copied under `wp-content/uploads/smartcloud-static-publisher/<logDir>/archive/<timestamp-command-jobId-status>/` as gzip-compressed per-file artifacts plus `job.json`
 
-## Admin App Setup
+## Admin Build and Packaging
 
-Build the admin bundle:
+If you keep Static Publisher next to the shared WPSuite Hub plugin during development, a practical layout is:
+
+```text
+/wp-content/plugins/
+  hub-for-wpsuiteio/
+  smartcloud-static-publisher/
+```
+
+Inside this repository, the admin-related folders have different roles:
+
+- `admin/src/`: React/Mantine source
+- `admin/php/`: PHP admin helpers that must be copied into the packaged plugin admin folder
+- `admin/dist/`: WordPress-ready JS asset output produced by the WordPress build
+
+Build the admin bundle for WordPress packaging:
 
 ```bash
 cd admin
 npm ci
-npm run build-wp dist
+npm run build-wp
 ```
 
-The plugin expects WordPress packaging output directly in the plugin admin directory:
+For the final plugin package, merge the contents of the source admin packaging folders into the plugin root `admin/` directory:
 
-- `admin/index.js`
-- `admin/index.asset.php`
-- `admin/index.css`
+- `admin/dist/*` -> `admin/`
+- `admin/php/*` -> `admin/`
+
+That means the packaged plugin should end up with a flattened admin folder like this:
+
+```text
+smartcloud-static-publisher/
+  smartcloud-static-publisher.php
+  hub-loader.php
+  admin/
+    admin.php
+    index.js
+    index.asset.php
+    *.js
+    *.css
+```
+
+In other words, `admin/dist/` and `admin/php/` are source-repository build inputs; the distributed plugin does not keep them as nested subdirectories.
 
 No Vite manifest is required in production packaging.
 
@@ -162,7 +191,7 @@ PUBLISHER_CONFIG=./publisher.config.json npx @smart-cloud/publisher-exporter inv
 npx @smart-cloud/publisher-exporter queue-runner --runtime-dir /var/www/site/wp-content/uploads/smartcloud-static-publisher/runtime --max-jobs=1
 ```
 
-For source-repo development workflow, keep using npm scripts inside `exporter/`.
+The public plugin repository does not include an `exporter/` directory. Use the published `@smart-cloud/publisher-exporter` CLI package instead.
 
 ## No Shell Access on WordPress Host
 
@@ -187,13 +216,10 @@ Trade-off:
 - `info` shows major milestones and progress counters.
 - `debug` adds detailed per-item operations.
 
-Deploy supports multiple sync strategies via `s3SyncMode`:
+Deploy supports two SDK sync strategies via `s3SyncMode`:
 
 - `sdk-upload-delete`: AWS SDK upload + stale object delete
 - `sdk-upload-only`: AWS SDK upload, no delete
-- `aws-s3-sync-delete`: executes `aws s3 sync --delete`
-- `aws-s3-sync`: executes `aws s3 sync`
-- `aws-s3-cp-recursive`: executes `aws s3 cp --recursive`
 
 ## Export Attribution
 
@@ -443,17 +469,15 @@ If the WordPress host cannot run Node, Playwright, or cron, you can still replay
 
 1. In the Job Queue panel use `Download config` next to the queued item and save it as `queued-job.json`.
 2. Extract the nested `publisherConfig` to `publisher.config.json` using either `manualExecution.commands.extractPublisherConfigNode` or `manualExecution.commands.extractPublisherConfigPowerShell` from the downloaded JSON.
-3. Install the published CLI package on that machine, or if you are running from a source checkout instead of the published package, build the exporter first:
+3. Install the published CLI package on that machine:
 
 ```bash
 npm install -g @smart-cloud/publisher-exporter
-# or, from repository source:
-# cd exporter && npm ci && npm run build
 ```
 
 4. Optionally edit `publisher.config.json` locally, for example to change `outputDir` to a writable folder on your machine.
 5. Run the exact job command from `manualExecution.commands.jobPosix` or `manualExecution.commands.jobPowerShell` in the downloaded JSON. These commands already reflect `publish` vs `crawl`, `incremental`, `retry-timeouts`, and `url` jobs.
-6. If you want deployment from your own machine too, continue with the provided `deploySdk`, `invalidateSdk`, or AWS CLI commands from the same `manualExecution.commands` block.
+6. If you want deployment from your own machine too, continue with the provided `deploySdk` and `invalidateSdk` commands from the same `manualExecution.commands` block.
 
 Important:
 

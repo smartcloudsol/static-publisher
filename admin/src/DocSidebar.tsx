@@ -297,7 +297,7 @@ const pages = {
       </Text>
       <Text mt="xs">
         {__(
-          "For CLI-based sync modes summary may only contain informational note depending on available details.",
+          "Because deploy is SDK-driven, this summary reflects uploaded, skipped, failed, and deleted object counts from the actual deploy run.",
           TEXT_DOMAIN,
         )}
       </Text>
@@ -417,18 +417,6 @@ const pages = {
         <List.Item>
           <Code>sdk-upload-only</Code>:{" "}
           {__("upload files, never delete stale keys", TEXT_DOMAIN)}
-        </List.Item>
-        <List.Item>
-          <Code>aws-s3-sync-delete</Code>:{" "}
-          {__("runs aws s3 sync --delete (CLI-driven mirror)", TEXT_DOMAIN)}
-        </List.Item>
-        <List.Item>
-          <Code>aws-s3-sync</Code>:{" "}
-          {__("runs aws s3 sync without delete", TEXT_DOMAIN)}
-        </List.Item>
-        <List.Item>
-          <Code>aws-s3-cp-recursive</Code>:{" "}
-          {__("runs aws s3 cp --recursive", TEXT_DOMAIN)}
         </List.Item>
       </List>
 

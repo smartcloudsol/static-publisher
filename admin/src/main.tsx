@@ -58,12 +58,7 @@ const IS_PREMIUM_BUILD = __WPSUITE_PREMIUM__;
 
 type RewriteMode = "absolute" | "root-relative" | "relative";
 type LogLevel = "error" | "warn" | "info" | "debug";
-type S3SyncMode =
-  | "sdk-upload-delete"
-  | "sdk-upload-only"
-  | "aws-s3-sync-delete"
-  | "aws-s3-sync"
-  | "aws-s3-cp-recursive";
+type S3SyncMode = "sdk-upload-delete" | "sdk-upload-only";
 type CrawlMode = "full" | "incremental";
 type JobCommand =
   | "publish"
@@ -3086,7 +3081,7 @@ export default function Main({ store }: MainProps) {
                       )}
                       <Text size="sm">
                         {__(
-                          "Use Download config next to queued jobs, install prerequisites locally, run crawl, then sync output with AWS CLI.",
+                          "Use Download config next to queued jobs, install prerequisites locally, run crawl, then deploy or invalidate with the exporter CLI.",
                           TEXT_DOMAIN,
                         )}
                       </Text>
@@ -3095,22 +3090,22 @@ export default function Main({ store }: MainProps) {
                         ff="monospace"
                         style={{ whiteSpace: "pre-wrap" }}
                       >
-                        aws s3 sync ./export/
-                        s3://&lt;s3-bucket&gt;/&lt;s3-prefix&gt;/ --delete
+                        PUBLISHER_CONFIG=./publisher.config.json npx
+                        @smart-cloud/publisher-exporter crawl
                         {"\n"}
-                        aws s3 cp ./export/
-                        s3://&lt;s3-bucket&gt;/&lt;s3-prefix&gt;/ --recursive
+                        PUBLISHER_CONFIG=./publisher.config.json npx
+                        @smart-cloud/publisher-exporter deploy
                         {"\n"}
-                        aws cloudfront create-invalidation --distribution-id
-                        &lt;distribution-id&gt; --paths '/*'
+                        PUBLISHER_CONFIG=./publisher.config.json npx
+                        @smart-cloud/publisher-exporter invalidate
                       </Text>
                       <Text size="sm">
                         <a
-                          href="https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+                          href="https://www.npmjs.com/package/@smart-cloud/publisher-exporter"
                           target="_blank"
                           rel="noreferrer"
                         >
-                          {__("AWS CLI install guide", TEXT_DOMAIN)}
+                          {__("Exporter CLI package", TEXT_DOMAIN)}
                         </a>
                       </Text>
                     </Stack>
@@ -3574,15 +3569,6 @@ export default function Main({ store }: MainProps) {
                                 {
                                   value: "sdk-upload-only",
                                   label: "sdk-upload-only (SDK upload only)",
-                                },
-                                {
-                                  value: "aws-s3-sync-delete",
-                                  label: "aws s3 sync --delete",
-                                },
-                                { value: "aws-s3-sync", label: "aws s3 sync" },
-                                {
-                                  value: "aws-s3-cp-recursive",
-                                  label: "aws s3 cp --recursive",
                                 },
                               ]}
                             />
@@ -5347,7 +5333,7 @@ export default function Main({ store }: MainProps) {
                                         </Text>
                                         {entry.artifacts &&
                                         entry.artifacts.length > 0 ? (
-                                          <Group gap="xs">
+                                          <Stack gap="xs">
                                             {entry.artifacts.map((artifact) => {
                                               const requestId = `${entry.id}:${artifact.id}`;
                                               return (
@@ -5373,7 +5359,7 @@ export default function Main({ store }: MainProps) {
                                                 </Button>
                                               );
                                             })}
-                                          </Group>
+                                          </Stack>
                                         ) : null}
                                       </Stack>
                                     </Table.Td>
