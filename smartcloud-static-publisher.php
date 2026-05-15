@@ -712,7 +712,7 @@ final class Plugin
         return $stripped;
     }
 
-    private function stripLocalOnlyConfigFromRuntimeConfig(array $config): array
+    public function stripLocalOnlyConfigFromRuntimeConfig(array $config): array
     {
         $stripped = $config;
         unset($stripped['exporterDir']);
