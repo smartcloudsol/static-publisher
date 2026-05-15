@@ -2,10 +2,6 @@
 
 WP Suite Static Publisher exports a WordPress site into a fully static artifact using a Playwright-based Node.js exporter, then deploys it to S3 and invalidates CloudFront.
 
-Project repository and extended documentation:
-
-- https://github.com/smartcloudsol/static-publisher
-
 The project now contains two coordinated parts:
 
 - A WordPress plugin admin screen for configuration, status, queueing, and log viewing.
