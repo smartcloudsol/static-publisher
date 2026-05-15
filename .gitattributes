@@ -1,0 +1,6 @@
+# Ignore tests, docs and examples when Composer creates the ZIP
+.gitattributes              export-ignore
+.gitignore                  export-ignore
+readme.md                   export-ignore
+core                        export-ignore
+/screenshot-*.png           export-ignore
