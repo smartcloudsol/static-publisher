@@ -57,6 +57,36 @@ Actual crawling and deployment are executed by your own Node runtime using this 
 * WordPress/PHP does not proxy deployment traffic.
 * The WordPress plugin ZIP does not bundle the Node.js exporter runtime; install `@smart-cloud/publisher-exporter` separately on the machine that processes queued jobs.
 
+== Free and Premium Usage Notice ==
+
+SmartCloud Static Publisher is fully functional in Free mode and does not require a WPSuite account, subscription, trial period, or paid service to perform its core static publishing workflow.
+
+In Free mode, the plugin supports the complete static publishing flow:
+
+* Configure source and target settings in WP Admin.
+* Queue and run full `crawl`, `publish`, `deploy`, `invalidate`, `retry-timeouts`, and single-URL jobs.
+* Export rendered WordPress pages using the separately installed Node.js exporter.
+* Capture required assets discovered during browser rendering.
+* Rewrite URLs according to the configured rewrite mode.
+* Deploy exported files to the configured S3 bucket.
+* Create CloudFront invalidations for the configured distribution.
+* View current job status and standard run logs.
+
+Free mode includes S3 deployment and CloudFront invalidation. These are not paid-only features.
+
+The plugin package itself manages WordPress-side configuration, queue state, runtime files, and status/log access. Actual crawling and deployment are executed by the separately installed `@smart-cloud/publisher-exporter` CLI on the user’s own server, workstation, CI runner, or other queue-runner host.
+
+Optional WPSuite Pro features are not required for the plugin to work. They are additional workflow, convenience, and team/enterprise publishing features. Examples may include:
+
+* Incremental crawl / incremental publish / scheduled workflows.
+* Multiple deployment target profiles.
+* Additional audit-log views and audit artifact convenience lists.
+* Additional team/workspace-oriented configuration features.
+
+These optional Pro features may be visible in the plugin interface as upgrade-only controls, but they are separate from the fully functional free static publishing workflow described above.
+
+When no active WPSuite subscription is connected, SmartCloud Static Publisher remains usable for full static crawl/publish/deploy workflows. There is no time limit, export quota, forced trial expiry, or required payment for the core static publishing functionality.
+
 == Installation ==
 
 1. Upload the plugin ZIP (or install from the WordPress plugin repository).
@@ -200,7 +230,7 @@ Recommended rules for this setup:
 Example `postCrawlCopyMap` sources:
 
 * `@storage-root/shared-assets/`
-* `@wp-root/wp-content/uploads/wpsuite-static/`
+* `@wp-root/wp-content/uploads/smartcloud-static-publisher/`
 
 If you inspect the raw `queue-runner-heartbeat.json`, the `runtimeDir` and `exporterDir` values reflect the queue runner host paths. That is expected and does not break WordPress-side queue state handling.
 

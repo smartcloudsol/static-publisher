@@ -1347,9 +1347,9 @@ function sanitizeSchedulerFromRemote(
 
 async function loadProConfigModule(): Promise<ProConfigModule> {
   if (IS_PREMIUM_BUILD) {
-    return (await import("./paid-features/pro-config")) as ProConfigModule;
+    return (await import("./paid-features/config")) as ProConfigModule;
   }
-  return (await import("./free-features/pro-config")) as ProConfigModule;
+  return (await import("./free-features/config")) as ProConfigModule;
 }
 
 async function restRequest<T>(
@@ -3737,7 +3737,13 @@ export default function Main({ store }: MainProps) {
                             onClick={openDeploymentProfileCreate}
                             disabled={!canManageExtraDeploymentProfiles}
                           >
-                            {__("Add target", TEXT_DOMAIN)}
+                            {__(
+                              "Add target" +
+                                (canManageExtraDeploymentProfiles
+                                  ? ""
+                                  : " (PRO)"),
+                              TEXT_DOMAIN,
+                            )}
                           </Button>
                         </Group>
 
