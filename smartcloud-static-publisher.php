@@ -4,7 +4,7 @@
  * Plugin URI:        https://wpsuite.io/static-publisher/
  * Description:       Static export admin for WP Suite Static Publisher. Generates runtime config, queues export jobs, and shows exporter logs.
  * Requires at least: 6.2
- * Tested up to:      6.9
+ * Tested up to:      7.0
  * Requires PHP:      8.1
  * Version:           1.0.0
  * Author:            Smart Cloud Solutions Inc.
@@ -1687,6 +1687,180 @@ final class Plugin
         $referenced[] = $postId;
     }
 
+    private function shouldIncludeRenderDependencyFile(string $filePath): bool
+    {
+        $extension = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
+        return in_array($extension, array('php', 'js', 'css', 'json', 'html', 'mjs', 'cjs'), true);
+    }
+
+    private function collectRenderDependencyFileSignatureEntries(string $targetPath, string $label, array &$entries, int &$latestModified): void
+    {
+        $normalizedTarget = wp_normalize_path($targetPath);
+        if ($normalizedTarget === '') {
+            return;
+        }
+
+        if (is_file($normalizedTarget)) {
+            if (!$this->shouldIncludeRenderDependencyFile($normalizedTarget)) {
+                return;
+            }
+
+            $fileStat = @stat($normalizedTarget);
+            if (!is_array($fileStat)) {
+                return;
+            }
+
+            $modifiedAt = isset($fileStat['mtime']) ? (int) $fileStat['mtime'] : 0;
+            $latestModified = max($latestModified, $modifiedAt);
+            $entries[] = $label . ':file:' . basename($normalizedTarget) . ':' . filesize($normalizedTarget) . ':' . $modifiedAt;
+            return;
+        }
+
+        if (!is_dir($normalizedTarget)) {
+            return;
+        }
+
+        try {
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($normalizedTarget, \FilesystemIterator::SKIP_DOTS)
+            );
+        } catch (\UnexpectedValueException $error) {
+            unset($error);
+            return;
+        }
+
+        foreach ($iterator as $fileInfo) {
+            if (!($fileInfo instanceof \SplFileInfo) || !$fileInfo->isFile()) {
+                continue;
+            }
+
+            $filePath = wp_normalize_path($fileInfo->getPathname());
+            if (!$this->shouldIncludeRenderDependencyFile($filePath)) {
+                continue;
+            }
+
+            $relativePath = ltrim(substr($filePath, strlen($normalizedTarget)), '/');
+            $modifiedAt = (int) $fileInfo->getMTime();
+            $latestModified = max($latestModified, $modifiedAt);
+            $entries[] = $label . ':dir:' . $relativePath . ':' . $fileInfo->getSize() . ':' . $modifiedAt;
+        }
+    }
+
+    private function computeActiveCodeRenderDependencySignature(): array
+    {
+        $targets = array();
+
+        $templateDirectory = wp_normalize_path((string) get_template_directory());
+        if ($templateDirectory !== '') {
+            $targets['theme-template'] = $templateDirectory;
+        }
+
+        $stylesheetDirectory = wp_normalize_path((string) get_stylesheet_directory());
+        if ($stylesheetDirectory !== '') {
+            $targets['theme-stylesheet'] = $stylesheetDirectory;
+        }
+
+        $pluginRoot = defined('WP_PLUGIN_DIR') ? wp_normalize_path((string) WP_PLUGIN_DIR) : '';
+        if (function_exists('wp_get_active_and_valid_plugins')) {
+            foreach (wp_get_active_and_valid_plugins() as $pluginFile) {
+                $normalizedPluginFile = wp_normalize_path((string) $pluginFile);
+                if ($normalizedPluginFile === '') {
+                    continue;
+                }
+
+                $pluginBaseName = function_exists('plugin_basename')
+                    ? (string) plugin_basename($normalizedPluginFile)
+                    : basename($normalizedPluginFile);
+                $pluginDirectory = wp_normalize_path(dirname($normalizedPluginFile));
+                if ($pluginRoot !== '' && $pluginDirectory === $pluginRoot) {
+                    $targets['plugin-file:' . $pluginBaseName] = $normalizedPluginFile;
+                    continue;
+                }
+
+                $targets['plugin-dir:' . dirname($pluginBaseName)] = $pluginDirectory;
+            }
+        }
+
+        $muPluginRoot = defined('WPMU_PLUGIN_DIR') ? wp_normalize_path((string) WPMU_PLUGIN_DIR) : '';
+        if (function_exists('wp_get_mu_plugins')) {
+            foreach (wp_get_mu_plugins() as $muPluginFile) {
+                $normalizedPluginFile = wp_normalize_path((string) $muPluginFile);
+                if ($normalizedPluginFile === '') {
+                    continue;
+                }
+
+                $relativeName = basename($normalizedPluginFile);
+                $pluginDirectory = wp_normalize_path(dirname($normalizedPluginFile));
+                if ($muPluginRoot !== '' && $pluginDirectory === $muPluginRoot) {
+                    $targets['mu-plugin-file:' . $relativeName] = $normalizedPluginFile;
+                    continue;
+                }
+
+                $targets['mu-plugin-dir:' . basename($pluginDirectory)] = $pluginDirectory;
+            }
+        }
+
+        ksort($targets, SORT_STRING);
+
+        $entries = array();
+        $latestModified = 0;
+        foreach ($targets as $label => $targetPath) {
+            $this->collectRenderDependencyFileSignatureEntries((string) $targetPath, (string) $label, $entries, $latestModified);
+        }
+
+        sort($entries, SORT_STRING);
+
+        return array(
+            'hash' => hash('sha256', implode("\n", $entries)),
+            'entryCount' => count($entries),
+            'latestModifiedGmt' => $latestModified > 0 ? gmdate('c', $latestModified) : '',
+        );
+    }
+
+    private function computeElementorLibraryRenderDependencySignature(): array
+    {
+        $templateIds = get_posts(array(
+            'post_type' => 'elementor_library',
+            'post_status' => array('publish', 'private'),
+            'posts_per_page' => -1,
+            'orderby' => 'ID',
+            'order' => 'ASC',
+            'fields' => 'ids',
+            'no_found_rows' => true,
+            'update_post_meta_cache' => false,
+            'update_post_term_cache' => false,
+            'suppress_filters' => false,
+        ));
+
+        if (!is_array($templateIds)) {
+            return array(
+                'hash' => hash('sha256', '[]'),
+                'count' => 0,
+            );
+        }
+
+        $signature = array();
+        foreach ($templateIds as $templateId) {
+            $template = get_post((int) $templateId);
+            if (!($template instanceof \WP_Post)) {
+                continue;
+            }
+
+            $signature[] = array(
+                'id' => (int) $template->ID,
+                'status' => (string) $template->post_status,
+                'modifiedGmt' => (string) ($template->post_modified_gmt ?: $template->post_modified),
+                'templateType' => sanitize_key((string) get_post_meta($template->ID, '_elementor_template_type', true)),
+                'conditionsHash' => hash('sha256', (string) wp_json_encode(get_post_meta($template->ID, '_elementor_conditions', true))),
+            );
+        }
+
+        return array(
+            'hash' => hash('sha256', (string) wp_json_encode($signature)),
+            'count' => count($signature),
+        );
+    }
+
     private function computeGlobalRenderDependencySignature(): array
     {
         $theme = wp_get_theme();
@@ -1725,12 +1899,17 @@ final class Plugin
 
         $elementorActiveKitId = absint(get_option('elementor_active_kit'));
         $elementorActiveKit = $elementorActiveKitId > 0 ? get_post($elementorActiveKitId) : null;
+        $activeCodeSignature = $this->computeActiveCodeRenderDependencySignature();
+        $elementorLibrarySignature = $this->computeElementorLibraryRenderDependencySignature();
 
         return array(
             'stylesheet' => (string) $theme->get_stylesheet(),
             'themeVersion' => (string) $theme->get('Version'),
             'themeModsHash' => hash('sha256', (string) wp_json_encode($themeMods)),
             'menuSignatureHash' => hash('sha256', (string) wp_json_encode($menuSignature)),
+            'activeCodeSignatureHash' => sanitize_text_field((string) ($activeCodeSignature['hash'] ?? '')),
+            'activeCodeEntryCount' => absint($activeCodeSignature['entryCount'] ?? 0),
+            'activeCodeLatestModifiedGmt' => sanitize_text_field((string) ($activeCodeSignature['latestModifiedGmt'] ?? '')),
             'showOnFront' => sanitize_text_field((string) get_option('show_on_front')),
             'pageOnFront' => absint(get_option('page_on_front')),
             'pageForPosts' => absint(get_option('page_for_posts')),
@@ -1738,6 +1917,8 @@ final class Plugin
             'elementorActiveKitModifiedGmt' => $elementorActiveKit instanceof \WP_Post
                 ? (string) ($elementorActiveKit->post_modified_gmt ?: $elementorActiveKit->post_modified)
                 : '',
+            'elementorLibrarySignatureHash' => sanitize_text_field((string) ($elementorLibrarySignature['hash'] ?? '')),
+            'elementorLibraryCount' => absint($elementorLibrarySignature['count'] ?? 0),
         );
     }
 
@@ -2543,6 +2724,27 @@ final class Plugin
         return implode('/', $clean);
     }
 
+    private function getProtectedRuntimeFileNames(array $paths): array
+    {
+        $protected = array(
+            'crawl-manifest.json' => true,
+            'deploy-plan.json' => true,
+        );
+
+        foreach ($paths as $key => $filePath) {
+            if ($key === 'logs' || $key === 'currentCrawlEvent') {
+                continue;
+            }
+
+            $basename = basename((string) $filePath);
+            if ($basename !== '') {
+                $protected[$basename] = true;
+            }
+        }
+
+        return $protected;
+    }
+
     public function readQueue(): array
     {
         $paths = $this->getRuntimePaths();
@@ -2557,6 +2759,17 @@ final class Plugin
             return array();
         }
 
+        $protectedRuntimeFiles = array();
+        $realLogsDir = realpath((string) $paths['logs']);
+        $realRuntimeDir = realpath((string) $paths['runtime']);
+        if (
+            is_string($realLogsDir)
+            && is_string($realRuntimeDir)
+            && wp_normalize_path($realLogsDir) === wp_normalize_path($realRuntimeDir)
+        ) {
+            $protectedRuntimeFiles = $this->getProtectedRuntimeFileNames($paths);
+        }
+
         $entries = scandir($paths['logs']);
         if (!is_array($entries)) {
             return array();
@@ -2565,6 +2778,9 @@ final class Plugin
         $files = array();
         foreach ($entries as $entry) {
             if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            if (isset($protectedRuntimeFiles[$entry])) {
                 continue;
             }
             $path = trailingslashit($paths['logs']) . $entry;

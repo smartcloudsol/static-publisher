@@ -28,6 +28,7 @@ This repository and the distributed WordPress plugin ZIP do not bundle the Node.
 ## Repository Layout
 
 - `smartcloud-static-publisher.php`: plugin bootstrap, admin menu, REST API, runtime file IO
+- `hub-loader.php`: loader for the packaged shared WPSuite Hub assets under `hub-for-wpsuiteio/`
 - `admin/`: React + Vite + Mantine admin app
 - `core/`: shared TypeScript package consumed by the admin app and exporter
 
@@ -91,6 +92,74 @@ smartcloud-static-publisher/
 In other words, `admin/dist/` and `admin/php/` are source-repository build inputs; the distributed plugin does not keep them as nested subdirectories.
 
 No Vite manifest is required in production packaging.
+
+## Assembling `hub-for-wpsuiteio/` for Distribution
+
+The distributed Static Publisher plugin also needs a packaged `hub-for-wpsuiteio/` directory built from the separate [Hub for WPSuite.io](https://github.com/smartcloudsol/hub-for-wpsuiteio) repository.
+
+Typical Hub-side build commands are:
+
+```bash
+cd ../hub-for-wpsuiteio/wpsuite-main
+yarn install
+yarn run build-wp dist
+
+cd ../wpsuite-admin
+yarn install
+yarn run build-wp dist
+
+cd ../wpsuite-amplify-vendor
+yarn install
+yarn run build
+
+cd ../wpsuite-mantine-vendor
+yarn install
+yarn run build
+
+cd ../wpsuite-webcrypto-vendor
+yarn install
+yarn run build
+```
+
+Then copy those shared Hub outputs into this plugin package like this:
+
+- `wpsuite-main/dist/*` -> `hub-for-wpsuiteio/`
+- `wpsuite-admin/php/*` and `wpsuite-admin/dist/*` -> `hub-for-wpsuiteio/`
+- `wpsuite-*-vendor/dist/*.js` -> `hub-for-wpsuiteio/assets/js/`
+- `wpsuite-*-vendor/dist/*.css` -> `hub-for-wpsuiteio/assets/css/`
+
+This is the same Hub packaging model used by the other WPSuite plugins. In practice:
+
+- `wpsuite-main/dist/` provides the globally loaded script that initializes WPSuite reCAPTCHA v3 when needed.
+- `wpsuite-admin/php/` contributes PHP entry files such as `index.php` that `hub-loader.php` expects to load from `hub-for-wpsuiteio/`.
+- `wpsuite-admin/dist/` contributes the built admin JS/CSS bundles for the shared Hub screens.
+- `wpsuite-*-vendor/dist/` contributes shared vendor bundles; for example Static Publisher admin code expects `hub-for-wpsuiteio/assets/css/mantine-vendor.css` and shared vendor scripts under `hub-for-wpsuiteio/assets/js/`.
+
+The final packaged plugin should therefore contain a Hub folder shaped roughly like this:
+
+```text
+smartcloud-static-publisher/
+  smartcloud-static-publisher.php
+  hub-loader.php
+  admin/
+    ...
+  hub-for-wpsuiteio/
+    index.php
+    model.php
+    main.js
+    main.asset.php
+    admin.js
+    admin.asset.php
+    *.js
+    *.css
+    assets/
+      js/
+        *.js
+      css/
+        *.css
+```
+
+The source repository does not vendor those Hub workspaces; only the assembled build outputs belong in the distributable plugin ZIP.
 
 ## WordPress i18n in Admin
 

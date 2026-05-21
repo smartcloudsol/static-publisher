@@ -2,7 +2,7 @@
 Contributors: smartcloud
 Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.2
-Tested up to: 6.9
+Tested up to: 7.0
 Requires PHP: 8.1
 Stable tag: 1.0.0
 License: MIT
