@@ -480,6 +480,18 @@ const pages = {
         )}
       </Text>
 
+      <Title order={3} mt="md" id="generated-404-request-path">
+        <span className="highlightable">
+          {__("Generated 404 Request Path", TEXT_DOMAIN)}
+        </span>
+      </Title>
+      <Text>
+        {__(
+          "Optional source path that should return HTTP 404 while still rendering your theme's not-found page. The exporter captures that rendered HTML into the matching static output path and skips link discovery from it.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+
       <Title order={3} mt="md" id="sitemap-paths">
         <span className="highlightable">
           {__("Sitemap Paths", TEXT_DOMAIN)}

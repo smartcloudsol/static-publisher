@@ -611,6 +611,7 @@ Example:
   "targetOrigin": "https://wpsuite.io",
   "urlRewriteMode": "relative",
   "seedPaths": ["/"],
+  "generated404RequestPath": "/not-found/preview/",
   "sitemapPaths": ["/sitemap_index.xml", "/sitemap.xml"],
   "allowedAssetHosts": ["wpsuite.local", "localhost"],
   "extraReplacements": {
@@ -628,6 +629,8 @@ Example:
   "s3SyncMode": "sdk-upload-delete"
 }
 ```
+
+If `generated404RequestPath` is set, the crawler requests that source path, expects an actual HTTP `404` response, captures the rendered DOM into the matching static output path such as `/not-found/preview/index.html`, and skips page-link discovery from that capture. Leave it empty or omit it to disable the feature.
 
 Extended example with base target and extra targets:
 

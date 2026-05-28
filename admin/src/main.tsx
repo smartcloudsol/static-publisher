@@ -177,6 +177,7 @@ type PublisherConfig = {
   exporterDir: string;
   noJavaScriptRenderPathPrefixes: string[];
   seedPaths: string[];
+  generated404RequestPath: string;
   sitemapPaths: string[];
   allowedAssetHosts: string[];
   assetPathPrefixes: string[];
@@ -369,6 +370,7 @@ const DEFAULT_CONFIG: PublisherConfig = {
   exporterDir: "",
   noJavaScriptRenderPathPrefixes: [],
   seedPaths: ["/"],
+  generated404RequestPath: "",
   sitemapPaths: ["/sitemap_index.xml", "/sitemap.xml"],
   allowedAssetHosts: [],
   assetPathPrefixes: ["/wp-content/", "/wp-includes/", "/assets/"],
@@ -1452,6 +1454,7 @@ function inferHasSavedConfig(
 
   const hasCustomPaths =
     config.seedPaths.length > 1 ||
+    config.generated404RequestPath.trim() !== "" ||
     config.sitemapPaths.join("\n") !== "/sitemap_index.xml\n/sitemap.xml";
 
   return hasInfraTarget || hasNonDefaultRewrite || hasCustomPaths;
@@ -1527,6 +1530,9 @@ export default function Main({ store }: MainProps) {
 
   const [seedPathsText, setSeedPathsText] = useState(
     linesText(config.seedPaths),
+  );
+  const [generated404RequestPath, setGenerated404RequestPath] = useState(
+    config.generated404RequestPath ?? "",
   );
   const [noJsRenderPrefixesText, setNoJsRenderPrefixesText] = useState(
     linesText(config.noJavaScriptRenderPathPrefixes),
@@ -2007,6 +2013,7 @@ export default function Main({ store }: MainProps) {
   useEffect(() => {
     queueMicrotask(() => {
       setSeedPathsText(linesText(config.seedPaths));
+      setGenerated404RequestPath(config.generated404RequestPath ?? "");
       setNoJsRenderPrefixesText(
         linesText(config.noJavaScriptRenderPathPrefixes),
       );
@@ -2546,6 +2553,7 @@ export default function Main({ store }: MainProps) {
       ...config,
       noJavaScriptRenderPathPrefixes: parseLines(noJsRenderPrefixesText),
       seedPaths: parseLines(seedPathsText),
+      generated404RequestPath: generated404RequestPath.trim(),
       sitemapPaths: parseLines(sitemapPathsText),
       allowedAssetHosts: parseLines(allowedHostsText),
       assetPathPrefixes: parseLines(assetPrefixesText),
@@ -3869,6 +3877,23 @@ export default function Main({ store }: MainProps) {
                               }
                               autosize
                               minRows={3}
+                            />
+                            <TextInput
+                              label={infoLabel(
+                                __("Generated 404 request path", TEXT_DOMAIN),
+                                "generated-404-request-path",
+                              )}
+                              description={__(
+                                "Optional source path that should render a real HTTP 404, then be captured into the matching static output path. Leave empty to disable.",
+                                TEXT_DOMAIN,
+                              )}
+                              placeholder="/not-found/preview/"
+                              value={generated404RequestPath}
+                              onChange={(event) =>
+                                setGenerated404RequestPath(
+                                  event.currentTarget.value,
+                                )
+                              }
                             />
                             <Textarea
                               label={infoLabel(

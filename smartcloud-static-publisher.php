@@ -309,6 +309,7 @@ final class Plugin
             'outputDir' => $this->normalizeStorageRelativePath((string) ($input['outputDir'] ?? 'export'), 'export'),
             'noJavaScriptRenderPathPrefixes' => $this->sanitizePathList($input['noJavaScriptRenderPathPrefixes'] ?? array()),
             'seedPaths' => $this->sanitizePathList($input['seedPaths'] ?? array()),
+            'generated404RequestPath' => $this->sanitizeOptionalPublicPath($input['generated404RequestPath'] ?? ''),
             'sitemapPaths' => $this->sanitizePathList($input['sitemapPaths'] ?? array('/sitemap_index.xml', '/sitemap.xml')),
             'allowedAssetHosts' => $this->sanitizeHostList($input['allowedAssetHosts'] ?? array()),
             'assetPathPrefixes' => $this->sanitizePathList($input['assetPathPrefixes'] ?? array('/wp-content/', '/wp-includes/')),
@@ -458,6 +459,27 @@ final class Plugin
         $token = sanitize_text_field((string) $value);
         $token = preg_replace('#[^a-zA-Z0-9_\-./]#', '', $token);
         return is_string($token) ? trim($token) : '';
+    }
+
+    private function sanitizeOptionalPublicPath($value): string
+    {
+        $raw = sanitize_text_field((string) $value);
+        if ($raw === '') {
+            return '';
+        }
+
+        if (preg_match('#^https?://#i', $raw)) {
+            $parsed = wp_parse_url($raw);
+            if (!is_array($parsed)) {
+                return '';
+            }
+            $raw = isset($parsed['path']) ? (string) $parsed['path'] : '';
+        }
+
+        $path = '/' . ltrim($this->sanitizePathToken($raw), '/');
+        $path = preg_replace('#/+#', '/', $path);
+
+        return is_string($path) && $path !== '/' ? $path : '';
     }
 
     private function sanitizeOptionalHostPath($value): string
