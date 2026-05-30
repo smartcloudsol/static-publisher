@@ -109,7 +109,7 @@ class Admin
             SMARTCLOUD_STATIC_PUBLISHER_URL . 'admin/index.js',
             $dependencies,
             $version,
-            array('strategy' => 'defer', 'in_footer' => true)
+            array('in_footer' => true, 'strategy' => 'defer')
         );
 
         if (function_exists('wp_set_script_translations')) {
