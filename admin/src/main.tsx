@@ -41,7 +41,6 @@ import {
   IconSettings,
   IconTrash,
 } from "@tabler/icons-react";
-import { __experimentalHeading as Heading } from "@wordpress/components";
 import { __ } from "@wordpress/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useDisclosure, useMediaQuery } from "@mantine/hooks";
@@ -70,6 +69,8 @@ type JobCommand =
 
 type ProConfigPatch = {
   scheduler?: unknown;
+  defaultDeploymentProfile?: string;
+  deploymentProfiles?: unknown;
 };
 
 type ProAccessStatus = {
@@ -317,7 +318,12 @@ type LoadStateOptions = {
   refreshSelectedLog?: boolean;
 };
 
-type AdminTab = "jobs" | "configuration" | "pro" | "audit";
+type AdminTab =
+  | "jobs"
+  | "configuration"
+  | "audit"
+  | "scheduler"
+  | "extraTargets";
 
 type AuditArtifact = {
   id: string;
@@ -1565,9 +1571,9 @@ export default function Main({ store }: MainProps) {
   const [mainSection, setMainSection] = useState<AdminTab>("configuration");
   const [hasSavedConfig, setHasSavedConfig] = useState(false);
   const initialTabResolvedRef = useRef(false);
-  const previousIncrementalAccessRef = useRef(initialHasIncrementalAccess);
-  const [savingProConfig, setSavingProConfig] = useState(false);
-  const [resolvedScheduler, setResolvedScheduler] = useState(config.scheduler);
+  const [savingSchedulerConfig, setSavingSchedulerConfig] = useState(false);
+  const [savingDeploymentTargetsConfig, setSavingDeploymentTargetsConfig] =
+    useState(false);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditEntries, setAuditEntries] = useState<AuditLogEntry[]>([]);
   const [auditPage, setAuditPage] = useState(1);
@@ -1968,17 +1974,23 @@ export default function Main({ store }: MainProps) {
       return;
     }
     const publisherConfig = getStoreSelect(store).getConfig();
-    if (!publisherConfig?.scheduler) {
+    if (!publisherConfig) {
       return;
     }
-    const scheduler = sanitizeSchedulerFromRemote(
-      publisherConfig.scheduler,
-      config.scheduler,
-    );
-    setResolvedScheduler(scheduler);
+    const scheduler = publisherConfig.scheduler
+      ? sanitizeSchedulerFromRemote(publisherConfig.scheduler, config.scheduler)
+      : config.scheduler;
+    const deploymentProfiles = publisherConfig.deploymentProfiles
+      ? normalizeDeploymentProfileMap(
+          publisherConfig.deploymentProfiles as Record<string, unknown>,
+        )
+      : config.deploymentProfiles;
+
     setConfig((prev) => ({
       ...prev,
       scheduler,
+      defaultDeploymentProfile: "",
+      deploymentProfiles,
     }));
   };
 
@@ -2204,7 +2216,6 @@ export default function Main({ store }: MainProps) {
 
       if (syncConfig) {
         setConfig(normalizedConfig);
-        setResolvedScheduler(normalizedConfig.scheduler);
         if (!initialTabResolvedRef.current) {
           setMainSection(inferredSavedConfig ? "jobs" : "configuration");
           initialTabResolvedRef.current = true;
@@ -2289,10 +2300,7 @@ export default function Main({ store }: MainProps) {
   };
 
   useEffect(() => {
-    if (
-      mainSection !== "audit" ||
-      !(proAccess.isLinked && proAccess.hasSubscription)
-    ) {
+    if (mainSection !== "audit") {
       return;
     }
     queueMicrotask(() => {
@@ -2301,8 +2309,6 @@ export default function Main({ store }: MainProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     mainSection,
-    proAccess.isLinked,
-    proAccess.hasSubscription,
     auditPage,
     auditPageSize,
     auditEventTypeFilter,
@@ -2448,6 +2454,10 @@ export default function Main({ store }: MainProps) {
   const selectedQueueDeploymentProfile = deploymentProfiles[deploymentProfile]
     ? deploymentProfile
     : "";
+  const showIncrementalFallbackWarning =
+    commandSupportsCrawlMode &&
+    crawlMode === "incremental" &&
+    !hasIncrementalAccess;
   const deploymentProfileOptions = useMemo(
     () => [
       {
@@ -2476,29 +2486,6 @@ export default function Main({ store }: MainProps) {
 
     return options;
   }, [deploymentProfileOptions, schedulerRuleDraft.deploymentProfile]);
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      if (!commandSupportsCrawlMode) {
-        previousIncrementalAccessRef.current = hasIncrementalAccess;
-        return;
-      }
-
-      if (!hasIncrementalAccess) {
-        if (crawlMode === "incremental") {
-          setCrawlMode("full");
-        }
-        previousIncrementalAccessRef.current = false;
-        return;
-      }
-
-      if (!previousIncrementalAccessRef.current && crawlMode === "full") {
-        setCrawlMode("incremental");
-      }
-
-      previousIncrementalAccessRef.current = true;
-    });
-  }, [commandSupportsCrawlMode, crawlMode, hasIncrementalAccess]);
   const navPrimary: Array<{
     value: AdminTab;
     label: string;
@@ -2514,6 +2501,11 @@ export default function Main({ store }: MainProps) {
       label: __("Configuration", TEXT_DOMAIN),
       icon: <IconSettings size={16} />,
     },
+    {
+      value: "audit",
+      label: __("Audit Logs", TEXT_DOMAIN),
+      icon: <IconFileText size={16} />,
+    },
   ];
   const navPro: Array<{
     value: AdminTab;
@@ -2522,16 +2514,14 @@ export default function Main({ store }: MainProps) {
     disabled?: boolean;
   }> = [
     {
-      value: "pro",
+      value: "scheduler",
       label: __("Scheduler Settings", TEXT_DOMAIN),
       icon: <IconKey size={16} />,
-      disabled: !hasActiveSubscription,
     },
     {
-      value: "audit",
-      label: __("Audit Logs", TEXT_DOMAIN),
-      icon: <IconFileText size={16} />,
-      disabled: !hasActiveSubscription,
+      value: "extraTargets",
+      label: __("Extra Deployment Targets", TEXT_DOMAIN),
+      icon: <IconCloudUpload size={16} />,
     },
   ];
 
@@ -2577,7 +2567,13 @@ export default function Main({ store }: MainProps) {
     try {
       const merged = {
         ...applyListFields(),
-        scheduler: resolvedScheduler,
+        defaultDeploymentProfile: "",
+        deploymentProfiles: {},
+        scheduler: {
+          enabled: false,
+          timezone: "UTC",
+          rules: [],
+        },
       };
 
       const response = await restRequest<{
@@ -2590,7 +2586,6 @@ export default function Main({ store }: MainProps) {
       const normalizedConfig = normalizePublisherConfig(response.config);
       setConfig(normalizedConfig);
       setHasSavedConfig(true);
-      setResolvedScheduler(normalizedConfig.scheduler);
       notifications.show({
         title: __("Configuration saved", TEXT_DOMAIN),
         message: response.message,
@@ -2609,7 +2604,15 @@ export default function Main({ store }: MainProps) {
     }
   };
 
-  const saveProConfig = async () => {
+  const syncRemoteProConfigState = async () => {
+    await refreshSiteSettingsCache();
+    await loadState({ syncConfig: true, refreshSelectedLog: false });
+    await reloadConfig(store);
+    hydrateStoreProConfig();
+    await refreshProAccessStatus();
+  };
+
+  const saveSchedulerConfig = async () => {
     if (!IS_PREMIUM_BUILD || !proAccess.isLinked) {
       notifications.show({
         title: __("WPSuite connection required", TEXT_DOMAIN),
@@ -2623,7 +2626,7 @@ export default function Main({ store }: MainProps) {
       return;
     }
 
-    setSavingProConfig(true);
+    setSavingSchedulerConfig(true);
     try {
       const nextScheduler = applyListFields().scheduler;
       const module = await loadProConfigModule();
@@ -2631,19 +2634,7 @@ export default function Main({ store }: MainProps) {
         scheduler: nextScheduler,
       });
 
-      await refreshSiteSettingsCache();
-      await reloadConfig(store);
-
-      const refreshed = getStoreSelect(store).getConfig();
-      const resolvedSchedulerConfig = refreshed?.scheduler
-        ? sanitizeSchedulerFromRemote(refreshed.scheduler, nextScheduler)
-        : nextScheduler;
-
-      setResolvedScheduler(resolvedSchedulerConfig);
-      setConfig((prev) => ({
-        ...prev,
-        scheduler: resolvedSchedulerConfig,
-      }));
+      await syncRemoteProConfigState();
 
       notifications.show({
         title: __("PRO settings saved", TEXT_DOMAIN),
@@ -2653,9 +2644,6 @@ export default function Main({ store }: MainProps) {
         ),
         color: "green",
       });
-
-      await loadState({ syncConfig: true, refreshSelectedLog: false });
-      await refreshProAccessStatus();
     } catch (error) {
       notifications.show({
         title: __("PRO save failed", TEXT_DOMAIN),
@@ -2664,7 +2652,54 @@ export default function Main({ store }: MainProps) {
         icon: <IconAlertCircle size={16} />,
       });
     } finally {
-      setSavingProConfig(false);
+      setSavingSchedulerConfig(false);
+    }
+  };
+
+  const saveDeploymentTargetsConfig = async () => {
+    if (!IS_PREMIUM_BUILD || !proAccess.isLinked) {
+      notifications.show({
+        title: __("WPSuite connection required", TEXT_DOMAIN),
+        message: __(
+          "Connect this site to wpsuite.io before saving extra deployment targets.",
+          TEXT_DOMAIN,
+        ),
+        color: "yellow",
+        icon: <IconAlertCircle size={16} />,
+      });
+      return;
+    }
+
+    setSavingDeploymentTargetsConfig(true);
+    try {
+      const nextDeploymentProfiles = normalizeDeploymentProfileMap(
+        applyListFields().deploymentProfiles,
+      );
+      const module = await loadProConfigModule();
+      await module.saveRemoteProConfig({
+        defaultDeploymentProfile: "",
+        deploymentProfiles: nextDeploymentProfiles,
+      });
+
+      await syncRemoteProConfigState();
+
+      notifications.show({
+        title: __("PRO settings saved", TEXT_DOMAIN),
+        message: __(
+          "Extra deployment targets were saved to the linked wpsuite.io site configuration.",
+          TEXT_DOMAIN,
+        ),
+        color: "green",
+      });
+    } catch (error) {
+      notifications.show({
+        title: __("PRO save failed", TEXT_DOMAIN),
+        message: (error as Error).message,
+        color: "red",
+        icon: <IconAlertCircle size={16} />,
+      });
+    } finally {
+      setSavingDeploymentTargetsConfig(false);
     }
   };
 
@@ -2680,21 +2715,6 @@ export default function Main({ store }: MainProps) {
         icon: <IconAlertCircle size={16} />,
       });
       return;
-    }
-
-    if (commandSupportsCrawlMode && crawlMode === "incremental") {
-      if (!hasIncrementalAccess) {
-        notifications.show({
-          title: __("Incremental mode requires subscription", TEXT_DOMAIN),
-          message: __(
-            "Incremental crawl is available only with an active WPSuite subscription.",
-            TEXT_DOMAIN,
-          ),
-          color: "yellow",
-          icon: <IconAlertCircle size={16} />,
-        });
-        return;
-      }
     }
 
     setQueueing(true);
@@ -2908,8 +2928,8 @@ export default function Main({ store }: MainProps) {
               width: "100%",
             }}
           >
-            <Heading
-              level={1}
+            <Title
+              order={1}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -2918,7 +2938,7 @@ export default function Main({ store }: MainProps) {
               }}
             >
               {__("SmartCloud Static Publisher", TEXT_DOMAIN)}
-            </Heading>
+            </Title>
             <Text c="dimmed" size="sm">
               {__(
                 "Sitemap-based export control panel for static publishing workflows.",
@@ -3414,7 +3434,7 @@ export default function Main({ store }: MainProps) {
                         <Group gap="xs">
                           <IconCloudUpload size={18} />
                           <Title order={3}>
-                            {__("Deployment Targets", TEXT_DOMAIN)}
+                            {__("Base Deployment Target", TEXT_DOMAIN)}
                           </Title>
                         </Group>
                         <Button
@@ -3443,7 +3463,7 @@ export default function Main({ store }: MainProps) {
                         )}
                         <Text size="sm" c="dimmed">
                           {__(
-                            "Set your main deploy target here. Add extra targets only when the same crawl needs to go to staging, production, or client-specific destinations.",
+                            "Set your main deploy target here. Additional deployment targets live under PRO Features > Extra Deployment Targets and are saved remotely.",
                             TEXT_DOMAIN,
                           )}
                         </Text>
@@ -3463,7 +3483,7 @@ export default function Main({ store }: MainProps) {
                           <Alert color="yellow" variant="light">
                             <Text size="sm">
                               {__(
-                                "Base target is always editable. Extra targets require an active WPSuite subscription.",
+                                "Base target is always editable. Extra deployment targets are managed separately under PRO Features and require an active WPSuite subscription.",
                                 TEXT_DOMAIN,
                               )}
                             </Text>
@@ -3727,126 +3747,14 @@ export default function Main({ store }: MainProps) {
                           </Table>
                         </Stack>
                         <Divider />
-                        <Group justify="space-between" align="flex-start">
-                          <Stack gap={2}>
-                            <Text fw={600}>
-                              {__("Extra targets", TEXT_DOMAIN)}
-                            </Text>
-                            <Text size="sm" c="dimmed">
-                              {__(
-                                "Use these for staging, production, or client-specific variants.",
-                                TEXT_DOMAIN,
-                              )}
-                            </Text>
-                          </Stack>
-                          <Button
-                            size="xs"
-                            leftSection={<IconPlus size={14} />}
-                            onClick={openDeploymentProfileCreate}
-                            disabled={!canManageExtraDeploymentProfiles}
-                          >
+                        <Alert color="blue" variant="light">
+                          <Text size="sm">
                             {__(
-                              "Add target" +
-                                (canManageExtraDeploymentProfiles
-                                  ? ""
-                                  : " (PRO)"),
+                              "Manage staging, production, or client-specific extra deployment targets under PRO Features > Extra Deployment Targets. The local WordPress configuration keeps only the base target.",
                               TEXT_DOMAIN,
                             )}
-                          </Button>
-                        </Group>
-
-                        {deploymentProfileNames.length === 0 ? (
-                          <Alert color="gray" variant="light">
-                            <Text size="sm">
-                              {__(
-                                "No extra targets yet. The base target above already works on its own.",
-                                TEXT_DOMAIN,
-                              )}
-                            </Text>
-                          </Alert>
-                        ) : (
-                          <Table
-                            withTableBorder
-                            withColumnBorders
-                            highlightOnHover
-                          >
-                            <Table.Thead>
-                              <Table.Tr>
-                                <Table.Th>{__("Name", TEXT_DOMAIN)}</Table.Th>
-                                <Table.Th>
-                                  {__("Target origin", TEXT_DOMAIN)}
-                                </Table.Th>
-                                <Table.Th>{__("S3", TEXT_DOMAIN)}</Table.Th>
-                                <Table.Th>
-                                  {__("CloudFront", TEXT_DOMAIN)}
-                                </Table.Th>
-                                <Table.Th>
-                                  {__("Replacements", TEXT_DOMAIN)}
-                                </Table.Th>
-                                <Table.Th>
-                                  {__("Actions", TEXT_DOMAIN)}
-                                </Table.Th>
-                              </Table.Tr>
-                            </Table.Thead>
-                            <Table.Tbody>
-                              {deploymentProfileNames.map((name) => {
-                                const profile = deploymentProfiles[name];
-                                return (
-                                  <Table.Tr key={name}>
-                                    <Table.Td>
-                                      <Code>{name}</Code>
-                                    </Table.Td>
-                                    <Table.Td>
-                                      {profile.targetOrigin || "-"}
-                                    </Table.Td>
-                                    <Table.Td>
-                                      {summarizeDeploymentProfileS3(profile)}
-                                    </Table.Td>
-                                    <Table.Td>
-                                      {summarizeDeploymentProfileCloudFront(
-                                        profile,
-                                      )}
-                                    </Table.Td>
-                                    <Table.Td>
-                                      {Object.keys(
-                                        profile.extraReplacements ?? {},
-                                      ).length || "-"}
-                                    </Table.Td>
-                                    <Table.Td>
-                                      <Group gap="xs">
-                                        <ActionIcon
-                                          variant="subtle"
-                                          size="sm"
-                                          onClick={() =>
-                                            openDeploymentProfileEdit(name)
-                                          }
-                                          disabled={
-                                            !canManageExtraDeploymentProfiles
-                                          }
-                                        >
-                                          <IconSettings size={14} />
-                                        </ActionIcon>
-                                        <ActionIcon
-                                          variant="subtle"
-                                          color="red"
-                                          size="sm"
-                                          onClick={() =>
-                                            removeDeploymentProfile(name)
-                                          }
-                                          disabled={
-                                            !canManageExtraDeploymentProfiles
-                                          }
-                                        >
-                                          <IconTrash size={14} />
-                                        </ActionIcon>
-                                      </Group>
-                                    </Table.Td>
-                                  </Table.Tr>
-                                );
-                              })}
-                            </Table.Tbody>
-                          </Table>
-                        )}
+                          </Text>
+                        </Alert>
                       </Stack>
                     </Card>
                   )}
@@ -4241,10 +4149,7 @@ export default function Main({ store }: MainProps) {
                                 "job-crawl-mode",
                               )}
                               value={crawlMode}
-                              disabled={
-                                !commandSupportsCrawlMode ||
-                                !hasIncrementalAccess
-                              }
+                              disabled={!commandSupportsCrawlMode}
                               description={
                                 !commandSupportsCrawlMode
                                   ? __(
@@ -4257,7 +4162,7 @@ export default function Main({ store }: MainProps) {
                                       TEXT_DOMAIN,
                                     )
                                   : __(
-                                      "Incremental requires an active WPSuite subscription.",
+                                      "Incremental requests stay selectable, but without an active WPSuite subscription the exporter will fall back to a full crawl.",
                                       TEXT_DOMAIN,
                                     )
                               }
@@ -4266,25 +4171,16 @@ export default function Main({ store }: MainProps) {
                                   (value as CrawlMode) || defaultCrawlMode,
                                 )
                               }
-                              data={
-                                hasIncrementalAccess
-                                  ? [
-                                      {
-                                        value: "full",
-                                        label: __("full", TEXT_DOMAIN),
-                                      },
-                                      {
-                                        value: "incremental",
-                                        label: __("incremental", TEXT_DOMAIN),
-                                      },
-                                    ]
-                                  : [
-                                      {
-                                        value: "full",
-                                        label: __("full", TEXT_DOMAIN),
-                                      },
-                                    ]
-                              }
+                              data={[
+                                {
+                                  value: "full",
+                                  label: __("full", TEXT_DOMAIN),
+                                },
+                                {
+                                  value: "incremental",
+                                  label: __("incremental", TEXT_DOMAIN),
+                                },
+                              ]}
                             />
                             <Select
                               style={queueJobCellStyle}
@@ -4307,7 +4203,7 @@ export default function Main({ store }: MainProps) {
                                     )
                                   : deploymentProfileNames.length === 0
                                   ? __(
-                                      "Base target will be used. Add extra targets under Configuration if needed.",
+                                      "Base target will be used. Add extra targets under PRO Features > Extra Deployment Targets if needed.",
                                       TEXT_DOMAIN,
                                     )
                                   : __(
@@ -4346,6 +4242,16 @@ export default function Main({ store }: MainProps) {
                               </Stack>
                             </Box>
                           </SimpleGrid>
+                          {showIncrementalFallbackWarning && (
+                            <Alert mt="md" color="yellow" variant="light">
+                              <Text size="sm">
+                                {__(
+                                  "Incremental crawl was selected, but this site has no active WPSuite subscription. The exporter will run a full crawl for the queued job.",
+                                  TEXT_DOMAIN,
+                                )}
+                              </Text>
+                            </Alert>
+                          )}
                           <Text mt="sm" size="sm" c="dimmed">
                             {__(
                               "WordPress only queues jobs into runtime/queue.json. Node execution stays outside PHP for review-safe operation.",
@@ -4943,7 +4849,7 @@ export default function Main({ store }: MainProps) {
                   </>
                 )}
 
-                {mainSection === "pro" && (
+                {mainSection === "scheduler" && (
                   <Card withBorder shadow="sm" radius="md" padding="lg">
                     <Group mb="md" gap="xs">
                       <IconKey size={18} />
@@ -5166,8 +5072,8 @@ export default function Main({ store }: MainProps) {
                       <Group justify="flex-end">
                         <Button
                           leftSection={<IconKey size={16} />}
-                          loading={savingProConfig}
-                          onClick={saveProConfig}
+                          loading={savingSchedulerConfig}
+                          onClick={saveSchedulerConfig}
                           disabled={!proSchedulerEditingEnabled}
                         >
                           {__("Save PRO Scheduler Settings", TEXT_DOMAIN)}
@@ -5177,265 +5083,416 @@ export default function Main({ store }: MainProps) {
                   </Card>
                 )}
 
-                {mainSection === "audit" && (
+                {mainSection === "extraTargets" && (
                   <Card withBorder shadow="sm" radius="md" padding="lg">
-                    {!hasActiveSubscription ? (
-                      <Alert color="orange" variant="light">
+                    <Group mb="md" gap="xs">
+                      <IconCloudUpload size={18} />
+                      <Title order={3}>
+                        {__("Extra Deployment Targets", TEXT_DOMAIN)}
+                      </Title>
+                    </Group>
+                    <Stack>
+                      <Alert color="blue" variant="light">
                         <Text size="sm">
                           {__(
-                            "Audit Logs requires an active WPSuite subscription.",
+                            "These extra deployment targets are stored in the linked wpsuite.io site configuration and are saved separately from the local WordPress settings.",
                             TEXT_DOMAIN,
                           )}
                         </Text>
                       </Alert>
-                    ) : (
-                      <>
-                        <Group mb="sm" gap="xs" justify="space-between">
-                          <Group gap="xs">
-                            <IconFileText size={18} />
-                            <Title order={3}>
-                              {__("Audit Log", TEXT_DOMAIN)}
-                            </Title>
-                          </Group>
-                          <Button
-                            variant="default"
-                            loading={auditLoading}
-                            onClick={() => void loadAuditLog()}
-                          >
-                            {__("Refresh", TEXT_DOMAIN)}
-                          </Button>
-                        </Group>
-                        <SimpleGrid cols={{ base: 1, md: 4 }} spacing="md">
-                          <Select
-                            label={__("Event type", TEXT_DOMAIN)}
-                            value={auditEventTypeFilter}
-                            onChange={(value) => {
-                              setAuditEventTypeFilter(value ?? "");
-                              setAuditPage(1);
-                            }}
-                            data={[
-                              { value: "", label: __("All", TEXT_DOMAIN) },
-                              { value: "job-created", label: "job-created" },
-                              { value: "job-deleted", label: "job-deleted" },
-                              {
-                                value: "job-run-started",
-                                label: "job-run-started",
-                              },
-                              {
-                                value: "job-run-stopped",
-                                label: "job-run-stopped",
-                              },
-                              {
-                                value: "job-run-finished",
-                                label: "job-run-finished",
-                              },
-                              {
-                                value: "queue-runner-error",
-                                label: "queue-runner-error",
-                              },
-                            ]}
-                          />
-                          <Select
-                            label={__("Status", TEXT_DOMAIN)}
-                            value={auditStatusFilter}
-                            onChange={(value) => {
-                              setAuditStatusFilter(value ?? "");
-                              setAuditPage(1);
-                            }}
-                            data={[
-                              { value: "", label: __("All", TEXT_DOMAIN) },
-                              { value: "queued", label: "queued" },
-                              { value: "running", label: "running" },
-                              { value: "stopped", label: "stopped" },
-                              { value: "success", label: "success" },
-                              { value: "failed", label: "failed" },
-                              { value: "info", label: "info" },
-                            ]}
-                          />
-                          <Select
-                            label={__("Rows/page", TEXT_DOMAIN)}
-                            value={String(auditPageSize)}
-                            onChange={(value) => {
-                              const next = Number(value ?? "25");
-                              setAuditPageSize(
-                                Number.isFinite(next) ? next : 25,
-                              );
-                              setAuditPage(1);
-                            }}
-                            data={[
-                              { value: "10", label: "10" },
-                              { value: "25", label: "25" },
-                              { value: "50", label: "50" },
-                              { value: "100", label: "100" },
-                            ]}
-                          />
-                          <TextInput
-                            label={__("Search", TEXT_DOMAIN)}
-                            value={auditSearchFilter}
-                            onChange={(event) => {
-                              setAuditSearchFilter(event.currentTarget.value);
-                              setAuditPage(1);
-                            }}
-                            placeholder={__(
-                              "job id, message, details",
+                      {IS_PREMIUM_BUILD && !proAccess.isLinked && (
+                        <Alert color="yellow" variant="light">
+                          <Text size="sm">
+                            {__(
+                              "Extra deployment targets are available only after connecting this site to wpsuite.io (accountId/siteId/siteKey required).",
                               TEXT_DOMAIN,
                             )}
-                          />
-                        </SimpleGrid>
-                        <Box mt="md">
-                          <Table
-                            withTableBorder
-                            withColumnBorders
-                            highlightOnHover
-                          >
-                            <Table.Thead>
-                              <Table.Tr>
-                                <Table.Th>{__("Time", TEXT_DOMAIN)}</Table.Th>
-                                <Table.Th>{__("Event", TEXT_DOMAIN)}</Table.Th>
-                                <Table.Th>{__("Status", TEXT_DOMAIN)}</Table.Th>
-                                <Table.Th>{__("Job", TEXT_DOMAIN)}</Table.Th>
-                                <Table.Th>{__("Actor", TEXT_DOMAIN)}</Table.Th>
-                                <Table.Th>
-                                  {__("Message", TEXT_DOMAIN)}
-                                </Table.Th>
-                              </Table.Tr>
-                            </Table.Thead>
-                            <Table.Tbody>
-                              {auditEntries.length === 0 ? (
-                                <Table.Tr>
-                                  <Table.Td colSpan={6}>
-                                    <Text c="dimmed" size="sm">
-                                      {__(
-                                        "No audit entries found.",
-                                        TEXT_DOMAIN,
-                                      )}
-                                    </Text>
+                          </Text>
+                        </Alert>
+                      )}
+                      {IS_PREMIUM_BUILD && !hasActiveSubscription && (
+                        <Alert color="orange" variant="light">
+                          <Text size="sm">
+                            {__(
+                              "Extra Deployment Targets requires an active WPSuite subscription.",
+                              TEXT_DOMAIN,
+                            )}
+                          </Text>
+                        </Alert>
+                      )}
+                      <Group justify="space-between" align="flex-start">
+                        <Stack gap={2}>
+                          <Text fw={600}>
+                            {__("Remote target variants", TEXT_DOMAIN)}
+                          </Text>
+                          <Text size="sm" c="dimmed">
+                            {__(
+                              "Use these for staging, production, or client-specific variants without duplicating the base crawl configuration.",
+                              TEXT_DOMAIN,
+                            )}
+                          </Text>
+                        </Stack>
+                        <Button
+                          size="xs"
+                          leftSection={<IconPlus size={14} />}
+                          onClick={openDeploymentProfileCreate}
+                          disabled={!canManageExtraDeploymentProfiles}
+                        >
+                          {__(
+                            "Add target" +
+                              (canManageExtraDeploymentProfiles
+                                ? ""
+                                : " (PRO)"),
+                            TEXT_DOMAIN,
+                          )}
+                        </Button>
+                      </Group>
+
+                      {deploymentProfileNames.length === 0 ? (
+                        <Alert color="gray" variant="light">
+                          <Text size="sm">
+                            {__(
+                              "No extra deployment targets yet. The base target from Configuration continues to work on its own.",
+                              TEXT_DOMAIN,
+                            )}
+                          </Text>
+                        </Alert>
+                      ) : (
+                        <Table
+                          withTableBorder
+                          withColumnBorders
+                          highlightOnHover
+                        >
+                          <Table.Thead>
+                            <Table.Tr>
+                              <Table.Th>{__("Name", TEXT_DOMAIN)}</Table.Th>
+                              <Table.Th>
+                                {__("Target origin", TEXT_DOMAIN)}
+                              </Table.Th>
+                              <Table.Th>{__("S3", TEXT_DOMAIN)}</Table.Th>
+                              <Table.Th>
+                                {__("CloudFront", TEXT_DOMAIN)}
+                              </Table.Th>
+                              <Table.Th>
+                                {__("Replacements", TEXT_DOMAIN)}
+                              </Table.Th>
+                              <Table.Th>{__("Actions", TEXT_DOMAIN)}</Table.Th>
+                            </Table.Tr>
+                          </Table.Thead>
+                          <Table.Tbody>
+                            {deploymentProfileNames.map((name) => {
+                              const profile = deploymentProfiles[name];
+                              return (
+                                <Table.Tr key={name}>
+                                  <Table.Td>
+                                    <Code>{name}</Code>
+                                  </Table.Td>
+                                  <Table.Td>
+                                    {profile.targetOrigin || "-"}
+                                  </Table.Td>
+                                  <Table.Td>
+                                    {summarizeDeploymentProfileS3(profile)}
+                                  </Table.Td>
+                                  <Table.Td>
+                                    {summarizeDeploymentProfileCloudFront(
+                                      profile,
+                                    )}
+                                  </Table.Td>
+                                  <Table.Td>
+                                    {Object.keys(
+                                      profile.extraReplacements ?? {},
+                                    ).length || "-"}
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <Group gap="xs">
+                                      <ActionIcon
+                                        variant="subtle"
+                                        size="sm"
+                                        onClick={() =>
+                                          openDeploymentProfileEdit(name)
+                                        }
+                                        disabled={
+                                          !canManageExtraDeploymentProfiles
+                                        }
+                                      >
+                                        <IconSettings size={14} />
+                                      </ActionIcon>
+                                      <ActionIcon
+                                        variant="subtle"
+                                        color="red"
+                                        size="sm"
+                                        onClick={() =>
+                                          removeDeploymentProfile(name)
+                                        }
+                                        disabled={
+                                          !canManageExtraDeploymentProfiles
+                                        }
+                                      >
+                                        <IconTrash size={14} />
+                                      </ActionIcon>
+                                    </Group>
                                   </Table.Td>
                                 </Table.Tr>
-                              ) : (
-                                auditEntries.map((entry) => (
-                                  <Table.Tr key={entry.id}>
-                                    <Table.Td>
-                                      <Text size="xs" ff="monospace">
-                                        {entry.occurredAt}
-                                      </Text>
-                                    </Table.Td>
-                                    <Table.Td>{entry.eventType}</Table.Td>
-                                    <Table.Td>
-                                      <Badge
-                                        color={
-                                          entry.status === "failed"
-                                            ? "red"
-                                            : entry.status === "success"
-                                            ? "green"
-                                            : entry.status === "stopped"
-                                            ? "yellow"
-                                            : entry.status === "running"
-                                            ? "blue"
-                                            : entry.status === "queued"
-                                            ? "gray"
-                                            : "dark"
-                                        }
-                                        variant="light"
-                                      >
-                                        {entry.status}
-                                      </Badge>
-                                    </Table.Td>
-                                    <Table.Td>
-                                      <Text size="xs" ff="monospace">
-                                        {entry.jobId || "-"}
-                                      </Text>
-                                      <Text size="xs" c="dimmed">
-                                        {entry.command || ""}
-                                      </Text>
-                                    </Table.Td>
-                                    <Table.Td>
-                                      <Text size="xs">
-                                        {entry.actorSource || "-"}
-                                      </Text>
-                                      <Text size="xs" c="dimmed">
-                                        {entry.actorUserId ?? ""}
-                                      </Text>
-                                    </Table.Td>
-                                    <Table.Td>
-                                      <Stack gap={4}>
-                                        <Text size="sm">
-                                          {entry.message || ""}
-                                        </Text>
-                                        {entry.artifacts &&
-                                        entry.artifacts.length > 0 ? (
-                                          <Stack gap="xs">
-                                            {entry.artifacts.map((artifact) => {
-                                              const requestId = `${entry.id}:${artifact.id}`;
-                                              return (
-                                                <Button
-                                                  key={artifact.id}
-                                                  variant="subtle"
-                                                  size="xs"
-                                                  leftSection={
-                                                    <IconDownload size={14} />
-                                                  }
-                                                  loading={
-                                                    downloadingAuditArtifactId ===
-                                                    requestId
-                                                  }
-                                                  onClick={() =>
-                                                    void downloadAuditArtifact(
-                                                      entry,
-                                                      artifact,
-                                                    )
-                                                  }
-                                                >
-                                                  {artifact.label}
-                                                </Button>
-                                              );
-                                            })}
-                                          </Stack>
-                                        ) : null}
-                                      </Stack>
-                                    </Table.Td>
-                                  </Table.Tr>
-                                ))
-                              )}
-                            </Table.Tbody>
-                          </Table>
-                        </Box>
-                        <Group justify="space-between" mt="md">
-                          <Text size="sm" c="dimmed">
-                            {__("Total entries:", TEXT_DOMAIN)} {auditTotal}
-                          </Text>
-                          <Group gap="xs">
-                            <Button
-                              variant="default"
-                              size="xs"
-                              disabled={auditPage <= 1 || auditLoading}
-                              onClick={() =>
-                                setAuditPage((prev) => Math.max(1, prev - 1))
-                              }
-                            >
-                              {__("Previous", TEXT_DOMAIN)}
-                            </Button>
-                            <Text size="sm">
-                              {auditPage} / {auditTotalPages}
-                            </Text>
-                            <Button
-                              variant="default"
-                              size="xs"
-                              disabled={
-                                auditPage >= auditTotalPages || auditLoading
-                              }
-                              onClick={() =>
-                                setAuditPage((prev) =>
-                                  Math.min(auditTotalPages, prev + 1),
-                                )
-                              }
-                            >
-                              {__("Next", TEXT_DOMAIN)}
-                            </Button>
-                          </Group>
+                              );
+                            })}
+                          </Table.Tbody>
+                        </Table>
+                      )}
+                      <Group justify="flex-end">
+                        <Button
+                          leftSection={<IconCloudUpload size={16} />}
+                          loading={savingDeploymentTargetsConfig}
+                          onClick={saveDeploymentTargetsConfig}
+                          disabled={!canManageExtraDeploymentProfiles}
+                        >
+                          {__("Save Extra Deployment Targets", TEXT_DOMAIN)}
+                        </Button>
+                      </Group>
+                    </Stack>
+                  </Card>
+                )}
+
+                {mainSection === "audit" && (
+                  <Card withBorder shadow="sm" radius="md" padding="lg">
+                    <>
+                      <Group mb="sm" gap="xs" justify="space-between">
+                        <Group gap="xs">
+                          <IconFileText size={18} />
+                          <Title order={3}>
+                            {__("Audit Log", TEXT_DOMAIN)}
+                          </Title>
                         </Group>
-                      </>
-                    )}
+                        <Button
+                          variant="default"
+                          loading={auditLoading}
+                          onClick={() => void loadAuditLog()}
+                        >
+                          {__("Refresh", TEXT_DOMAIN)}
+                        </Button>
+                      </Group>
+                      <SimpleGrid cols={{ base: 1, md: 4 }} spacing="md">
+                        <Select
+                          label={__("Event type", TEXT_DOMAIN)}
+                          value={auditEventTypeFilter}
+                          onChange={(value) => {
+                            setAuditEventTypeFilter(value ?? "");
+                            setAuditPage(1);
+                          }}
+                          data={[
+                            { value: "", label: __("All", TEXT_DOMAIN) },
+                            { value: "job-created", label: "job-created" },
+                            { value: "job-deleted", label: "job-deleted" },
+                            {
+                              value: "job-run-started",
+                              label: "job-run-started",
+                            },
+                            {
+                              value: "job-run-stopped",
+                              label: "job-run-stopped",
+                            },
+                            {
+                              value: "job-run-finished",
+                              label: "job-run-finished",
+                            },
+                            {
+                              value: "queue-runner-error",
+                              label: "queue-runner-error",
+                            },
+                          ]}
+                        />
+                        <Select
+                          label={__("Status", TEXT_DOMAIN)}
+                          value={auditStatusFilter}
+                          onChange={(value) => {
+                            setAuditStatusFilter(value ?? "");
+                            setAuditPage(1);
+                          }}
+                          data={[
+                            { value: "", label: __("All", TEXT_DOMAIN) },
+                            { value: "queued", label: "queued" },
+                            { value: "running", label: "running" },
+                            { value: "stopped", label: "stopped" },
+                            { value: "success", label: "success" },
+                            { value: "failed", label: "failed" },
+                            { value: "info", label: "info" },
+                          ]}
+                        />
+                        <Select
+                          label={__("Rows/page", TEXT_DOMAIN)}
+                          value={String(auditPageSize)}
+                          onChange={(value) => {
+                            const next = Number(value ?? "25");
+                            setAuditPageSize(Number.isFinite(next) ? next : 25);
+                            setAuditPage(1);
+                          }}
+                          data={[
+                            { value: "10", label: "10" },
+                            { value: "25", label: "25" },
+                            { value: "50", label: "50" },
+                            { value: "100", label: "100" },
+                          ]}
+                        />
+                        <TextInput
+                          label={__("Search", TEXT_DOMAIN)}
+                          value={auditSearchFilter}
+                          onChange={(event) => {
+                            setAuditSearchFilter(event.currentTarget.value);
+                            setAuditPage(1);
+                          }}
+                          placeholder={__(
+                            "job id, message, details",
+                            TEXT_DOMAIN,
+                          )}
+                        />
+                      </SimpleGrid>
+                      <Box mt="md">
+                        <Table
+                          withTableBorder
+                          withColumnBorders
+                          highlightOnHover
+                        >
+                          <Table.Thead>
+                            <Table.Tr>
+                              <Table.Th>{__("Time", TEXT_DOMAIN)}</Table.Th>
+                              <Table.Th>{__("Event", TEXT_DOMAIN)}</Table.Th>
+                              <Table.Th>{__("Status", TEXT_DOMAIN)}</Table.Th>
+                              <Table.Th>{__("Job", TEXT_DOMAIN)}</Table.Th>
+                              <Table.Th>{__("Actor", TEXT_DOMAIN)}</Table.Th>
+                              <Table.Th>{__("Message", TEXT_DOMAIN)}</Table.Th>
+                            </Table.Tr>
+                          </Table.Thead>
+                          <Table.Tbody>
+                            {auditEntries.length === 0 ? (
+                              <Table.Tr>
+                                <Table.Td colSpan={6}>
+                                  <Text c="dimmed" size="sm">
+                                    {__("No audit entries found.", TEXT_DOMAIN)}
+                                  </Text>
+                                </Table.Td>
+                              </Table.Tr>
+                            ) : (
+                              auditEntries.map((entry) => (
+                                <Table.Tr key={entry.id}>
+                                  <Table.Td>
+                                    <Text size="xs" ff="monospace">
+                                      {entry.occurredAt}
+                                    </Text>
+                                  </Table.Td>
+                                  <Table.Td>{entry.eventType}</Table.Td>
+                                  <Table.Td>
+                                    <Badge
+                                      color={
+                                        entry.status === "failed"
+                                          ? "red"
+                                          : entry.status === "success"
+                                          ? "green"
+                                          : entry.status === "stopped"
+                                          ? "yellow"
+                                          : entry.status === "running"
+                                          ? "blue"
+                                          : entry.status === "queued"
+                                          ? "gray"
+                                          : "dark"
+                                      }
+                                      variant="light"
+                                    >
+                                      {entry.status}
+                                    </Badge>
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <Text size="xs" ff="monospace">
+                                      {entry.jobId || "-"}
+                                    </Text>
+                                    <Text size="xs" c="dimmed">
+                                      {entry.command || ""}
+                                    </Text>
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <Text size="xs">
+                                      {entry.actorSource || "-"}
+                                    </Text>
+                                    <Text size="xs" c="dimmed">
+                                      {entry.actorUserId ?? ""}
+                                    </Text>
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <Stack gap={4}>
+                                      <Text size="sm">
+                                        {entry.message || ""}
+                                      </Text>
+                                      {entry.artifacts &&
+                                      entry.artifacts.length > 0 ? (
+                                        <Stack gap="xs">
+                                          {entry.artifacts.map((artifact) => {
+                                            const requestId = `${entry.id}:${artifact.id}`;
+                                            return (
+                                              <Button
+                                                key={artifact.id}
+                                                variant="subtle"
+                                                size="xs"
+                                                leftSection={
+                                                  <IconDownload size={14} />
+                                                }
+                                                loading={
+                                                  downloadingAuditArtifactId ===
+                                                  requestId
+                                                }
+                                                onClick={() =>
+                                                  void downloadAuditArtifact(
+                                                    entry,
+                                                    artifact,
+                                                  )
+                                                }
+                                              >
+                                                {artifact.label}
+                                              </Button>
+                                            );
+                                          })}
+                                        </Stack>
+                                      ) : null}
+                                    </Stack>
+                                  </Table.Td>
+                                </Table.Tr>
+                              ))
+                            )}
+                          </Table.Tbody>
+                        </Table>
+                      </Box>
+                      <Group justify="space-between" mt="md">
+                        <Text size="sm" c="dimmed">
+                          {__("Total entries:", TEXT_DOMAIN)} {auditTotal}
+                        </Text>
+                        <Group gap="xs">
+                          <Button
+                            variant="default"
+                            size="xs"
+                            disabled={auditPage <= 1 || auditLoading}
+                            onClick={() =>
+                              setAuditPage((prev) => Math.max(1, prev - 1))
+                            }
+                          >
+                            {__("Previous", TEXT_DOMAIN)}
+                          </Button>
+                          <Text size="sm">
+                            {auditPage} / {auditTotalPages}
+                          </Text>
+                          <Button
+                            variant="default"
+                            size="xs"
+                            disabled={
+                              auditPage >= auditTotalPages || auditLoading
+                            }
+                            onClick={() =>
+                              setAuditPage((prev) =>
+                                Math.min(auditTotalPages, prev + 1),
+                              )
+                            }
+                          >
+                            {__("Next", TEXT_DOMAIN)}
+                          </Button>
+                        </Group>
+                      </Group>
+                    </>
                   </Card>
                 )}
               </Box>
@@ -5546,7 +5603,7 @@ export default function Main({ store }: MainProps) {
               description={
                 deploymentProfileNames.length === 0
                   ? __(
-                      "Leave this empty to use the base target. Add extra targets under Configuration when needed.",
+                      "Leave this empty to use the base target. Add extra targets under Pro Features > Extra Deployment Targets when needed.",
                       TEXT_DOMAIN,
                     )
                   : __(
@@ -5569,12 +5626,13 @@ export default function Main({ store }: MainProps) {
             type="number"
             min={1}
             value={String(schedulerRuleDraft.intervalMinutes)}
-            onChange={(event) =>
+            onChange={(event) => {
+              const value = Number(event.currentTarget.value || "1");
               setSchedulerRuleDraft((prev) => ({
                 ...prev,
-                intervalMinutes: Number(event.currentTarget.value || "1"),
-              }))
-            }
+                intervalMinutes: value,
+              }));
+            }}
           />
 
           {schedulerRuleDraft.command === "url" && (
@@ -5582,24 +5640,26 @@ export default function Main({ store }: MainProps) {
               label={__("URL path", TEXT_DOMAIN)}
               placeholder="/blog/post/"
               value={schedulerRuleDraft.url ?? ""}
-              onChange={(event) =>
+              onChange={(event) => {
+                const value = event.currentTarget.value;
                 setSchedulerRuleDraft((prev) => ({
                   ...prev,
-                  url: event.currentTarget.value,
-                }))
-              }
+                  url: value,
+                }));
+              }}
             />
           )}
 
           <Switch
             label={__("Enabled", TEXT_DOMAIN)}
             checked={schedulerRuleDraft.enabled}
-            onChange={(event) =>
+            onChange={(event) => {
+              const checked = event.currentTarget.checked;
               setSchedulerRuleDraft((prev) => ({
                 ...prev,
-                enabled: event.currentTarget.checked,
-              }))
-            }
+                enabled: checked,
+              }));
+            }}
             size="sm"
           />
 
@@ -5634,12 +5694,13 @@ export default function Main({ store }: MainProps) {
           <TextInput
             label={__("Target key", TEXT_DOMAIN)}
             value={deploymentProfileDraft.name}
-            onChange={(event) =>
+            onChange={(event) => {
+              const value = event.currentTarget.value;
               setDeploymentProfileDraft((prev) => ({
                 ...prev,
-                name: event.currentTarget.value,
-              }))
-            }
+                name: value,
+              }));
+            }}
             placeholder="staging"
             description={__(
               "Used with CLI --profile and in queue or scheduler selectors.",
@@ -5663,12 +5724,13 @@ export default function Main({ store }: MainProps) {
           <TextInput
             label={__("Public URL override", TEXT_DOMAIN)}
             value={deploymentProfileDraft.targetOrigin}
-            onChange={(event) =>
+            onChange={(event) => {
+              const value = event.currentTarget.value;
               setDeploymentProfileDraft((prev) => ({
                 ...prev,
-                targetOrigin: event.currentTarget.value,
-              }))
-            }
+                targetOrigin: value,
+              }));
+            }}
             placeholder="https://staging.example.com or ."
             description={__(
               "Optional. Rewrites links for this target. Use '.' for relative output.",
@@ -5680,80 +5742,86 @@ export default function Main({ store }: MainProps) {
             <TextInput
               label={__("S3 bucket override", TEXT_DOMAIN)}
               value={deploymentProfileDraft.s3.bucket}
-              onChange={(event) =>
+              onChange={(event) => {
+                const value = event.currentTarget.value;
                 setDeploymentProfileDraft((prev) => ({
                   ...prev,
                   s3: {
                     ...prev.s3,
-                    bucket: event.currentTarget.value,
+                    bucket: value,
                   },
-                }))
-              }
+                }));
+              }}
             />
             <TextInput
               label={__("S3 prefix override", TEXT_DOMAIN)}
               value={deploymentProfileDraft.s3.prefix}
-              onChange={(event) =>
+              onChange={(event) => {
+                const value = event.currentTarget.value;
                 setDeploymentProfileDraft((prev) => ({
                   ...prev,
                   s3: {
                     ...prev.s3,
-                    prefix: event.currentTarget.value,
+                    prefix: value,
                   },
-                }))
-              }
+                }));
+              }}
             />
             <TextInput
               label={__("AWS region override", TEXT_DOMAIN)}
               value={deploymentProfileDraft.s3.region}
-              onChange={(event) =>
+              onChange={(event) => {
+                const value = event.currentTarget.value;
                 setDeploymentProfileDraft((prev) => ({
                   ...prev,
                   s3: {
                     ...prev.s3,
-                    region: event.currentTarget.value,
+                    region: value,
                   },
-                }))
-              }
+                }));
+              }}
             />
             <TextInput
               label={__("HTML cache-control override", TEXT_DOMAIN)}
               value={deploymentProfileDraft.s3.htmlCacheControl}
-              onChange={(event) =>
+              onChange={(event) => {
+                const value = event.currentTarget.value;
                 setDeploymentProfileDraft((prev) => ({
                   ...prev,
                   s3: {
                     ...prev.s3,
-                    htmlCacheControl: event.currentTarget.value,
+                    htmlCacheControl: value,
                   },
-                }))
-              }
+                }));
+              }}
             />
             <TextInput
               label={__("Asset cache-control override", TEXT_DOMAIN)}
               value={deploymentProfileDraft.s3.assetCacheControl}
-              onChange={(event) =>
+              onChange={(event) => {
+                const value = event.currentTarget.value;
                 setDeploymentProfileDraft((prev) => ({
                   ...prev,
                   s3: {
                     ...prev.s3,
-                    assetCacheControl: event.currentTarget.value,
+                    assetCacheControl: value,
                   },
-                }))
-              }
+                }));
+              }}
             />
             <TextInput
               label={__("CloudFront distribution ID override", TEXT_DOMAIN)}
               value={deploymentProfileDraft.cloudFront.distributionId}
-              onChange={(event) =>
+              onChange={(event) => {
+                const value = event.currentTarget.value;
                 setDeploymentProfileDraft((prev) => ({
                   ...prev,
                   cloudFront: {
                     ...prev.cloudFront,
-                    distributionId: event.currentTarget.value,
+                    distributionId: value,
                   },
-                }))
-              }
+                }));
+              }}
             />
           </SimpleGrid>
 
@@ -5763,15 +5831,16 @@ export default function Main({ store }: MainProps) {
               TEXT_DOMAIN,
             )}
             value={deploymentProfileDraft.cloudFront.invalidationPathsText}
-            onChange={(event) =>
+            onChange={(event) => {
+              const value = event.currentTarget.value;
               setDeploymentProfileDraft((prev) => ({
                 ...prev,
                 cloudFront: {
                   ...prev.cloudFront,
-                  invalidationPathsText: event.currentTarget.value,
+                  invalidationPathsText: value,
                 },
-              }))
-            }
+              }));
+            }}
             autosize
             minRows={3}
             placeholder="/*"
@@ -5822,7 +5891,8 @@ export default function Main({ store }: MainProps) {
                       <TextInput
                         value={row.key}
                         placeholder="https://dev.example.com"
-                        onChange={(event) =>
+                        onChange={(event) => {
+                          const value = event.currentTarget.value;
                           setDeploymentProfileDraft((prev) => ({
                             ...prev,
                             extraReplacementRows: prev.extraReplacementRows.map(
@@ -5830,19 +5900,20 @@ export default function Main({ store }: MainProps) {
                                 item.id === row.id
                                   ? {
                                       ...item,
-                                      key: event.currentTarget.value,
+                                      key: value,
                                     }
                                   : item,
                             ),
-                          }))
-                        }
+                          }));
+                        }}
                       />
                     </Table.Td>
                     <Table.Td>
                       <TextInput
                         value={row.value}
                         placeholder="https://staging.example.com"
-                        onChange={(event) =>
+                        onChange={(event) => {
+                          const value = event.currentTarget.value;
                           setDeploymentProfileDraft((prev) => ({
                             ...prev,
                             extraReplacementRows: prev.extraReplacementRows.map(
@@ -5850,12 +5921,12 @@ export default function Main({ store }: MainProps) {
                                 item.id === row.id
                                   ? {
                                       ...item,
-                                      value: event.currentTarget.value,
+                                      value,
                                     }
                                   : item,
                             ),
-                          }))
-                        }
+                          }));
+                        }}
                       />
                     </Table.Td>
                     <Table.Td>

@@ -118,26 +118,26 @@ const pages = {
       </Text>
       <Text mt="xs">
         {__(
-          "Extra targets reuse the same crawl artifact, but override selected deploy-time settings for staging, production, or client-specific destinations.",
+          "Extra Deployment Targets are configured separately under Pro Features and reuse the same crawl artifact by overriding selected deploy-time settings for staging, production, or client-specific destinations.",
           TEXT_DOMAIN,
         )}
       </Text>
       <List size="sm" spacing="xs" withPadding mt="xs">
         <List.Item>
           {__(
-            "Base target is always available and remains the fallback when no profile is selected.",
+            "The base target is stored in the local Static Publisher configuration and remains the fallback when no extra target is selected.",
             TEXT_DOMAIN,
           )}
         </List.Item>
         <List.Item>
           {__(
-            "Additional profiles are for alternate buckets, domains, and invalidation settings without re-crawling.",
+            "Named Extra Deployment Targets are for alternate buckets, domains, and invalidation settings without re-crawling.",
             TEXT_DOMAIN,
           )}
         </List.Item>
         <List.Item>
           {__(
-            "If an additional profile changes target origin, the base crawl should use absolute URL rewrite mode so deploy-time replacement stays safe.",
+            "If an Extra Deployment Target changes target origin, the base crawl should use absolute URL rewrite mode so deploy-time replacement stays safe.",
             TEXT_DOMAIN,
           )}
         </List.Item>
@@ -216,6 +216,12 @@ const pages = {
           TEXT_DOMAIN,
         )}
       </Text>
+      <Text mt="xs">
+        {__(
+          "In the admin UI, Scheduler Settings and Extra Deployment Targets are separate Pro screens loaded from the linked WPSuite site config. The local WordPress config keeps only the base target settings plus any selected target override.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
       <List size="sm" spacing="xs" withPadding mt="xs">
         <List.Item>
           {__(
@@ -272,13 +278,13 @@ const pages = {
         </List.Item>
         <List.Item>
           {__(
-            "Incremental mode is available only for publish and crawl commands, and requires an active WPSuite subscription.",
+            "Incremental mode is selectable only for publish and crawl commands.",
             TEXT_DOMAIN,
           )}
         </List.Item>
         <List.Item>
           {__(
-            "Normal manual full jobs remain usable without this subscription-gated mode.",
+            "If no active WPSuite subscription is connected, the exporter logs a warning and falls back to a full crawl for that job.",
             TEXT_DOMAIN,
           )}
         </List.Item>
@@ -302,6 +308,22 @@ const pages = {
         )}
       </Text>
 
+      <Title order={3} mt="md" id="audit-logs">
+        <span className="highlightable">{__("Audit Logs", TEXT_DOMAIN)}</span>
+      </Title>
+      <Text>
+        {__(
+          "Audit Logs is part of the main Static Publisher navigation and is available without WPSuite subscription gating.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+      <Text mt="xs">
+        {__(
+          "Finished and stopped runs can expose archived job artifacts for download directly from this screen.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+
       <Title order={3} mt="md" id="target-origin">
         <span className="highlightable">
           {__("Target Origin", TEXT_DOMAIN)}
@@ -309,7 +331,7 @@ const pages = {
       </Title>
       <Text>
         {__(
-          "For the base target this is the primary public origin written into exported files. Additional profiles can override it during deploy-time rewriting. Use '.' for relative output workflows.",
+          "For the base target this is the primary public origin written into exported files. Extra Deployment Targets can override it during deploy-time rewriting. Use '.' for relative output workflows.",
           TEXT_DOMAIN,
         )}
       </Text>
@@ -578,7 +600,7 @@ const pages = {
       </Title>
       <Text>
         {__(
-          "Destination bucket for base deploy operations. Additional profiles can override it for alternate targets.",
+          "Destination bucket for base deploy operations. Extra Deployment Targets can override it for alternate destinations.",
           TEXT_DOMAIN,
         )}
       </Text>
@@ -588,7 +610,7 @@ const pages = {
       </Title>
       <Text>
         {__(
-          "Destination key prefix inside the bucket for the base target. Profiles may point to a different path.",
+          "Destination key prefix inside the bucket for the base target. Extra Deployment Targets may point to a different path.",
           TEXT_DOMAIN,
         )}
       </Text>
@@ -598,7 +620,7 @@ const pages = {
       </Title>
       <Text>
         {__(
-          "AWS region used by SDK and CLI operations for the active deploy target. Profiles can override it if the alternate bucket lives elsewhere.",
+          "AWS region used by SDK and CLI operations for the active deploy target. Extra Deployment Targets can override it if the alternate bucket lives elsewhere.",
           TEXT_DOMAIN,
         )}
       </Text>
@@ -610,7 +632,7 @@ const pages = {
       </Title>
       <Text>
         {__(
-          "Distribution ID used by invalidate command after deploy for the active target. Profiles can point invalidate to a different CDN.",
+          "Distribution ID used by invalidate command after deploy for the active target. Extra Deployment Targets can point invalidate to a different CDN.",
           TEXT_DOMAIN,
         )}
       </Text>
@@ -622,7 +644,7 @@ const pages = {
       </Title>
       <Text>
         {__(
-          "CloudFront paths to invalidate after deploy. Base target and additional profiles can each use their own invalidation path list. Typical value is /*.",
+          "CloudFront paths to invalidate after deploy. Base target and Extra Deployment Targets can each use their own invalidation path list. Typical value is /*.",
           TEXT_DOMAIN,
         )}
       </Text>
@@ -644,13 +666,13 @@ const pages = {
       </Title>
       <Text>
         {__(
-          "Used by publish, deploy, and invalidate jobs when you want to target a non-base deployment profile. Leave it empty to use the base target settings.",
+          "Used by publish, deploy, and invalidate jobs when you want to target a named Extra Deployment Target instead of the base target. Leave it empty to use the base target settings.",
           TEXT_DOMAIN,
         )}
       </Text>
       <Text mt="xs">
         {__(
-          "This selector does not create a new crawl snapshot. It only chooses which deploy-time target overrides should be applied to the existing crawl artifact.",
+          "This selector does not create a new crawl snapshot. It references Extra Deployment Targets saved through the linked WPSuite site config, while the local runtime or downloaded config only keeps the selected target override id.",
           TEXT_DOMAIN,
         )}
       </Text>

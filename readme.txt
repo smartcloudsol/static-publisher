@@ -74,14 +74,17 @@ In Free mode, the plugin supports the complete static publishing flow:
 
 Free mode includes S3 deployment and CloudFront invalidation. These are not paid-only features.
 
+Audit Logs is also part of the main Static Publisher navigation and is not gated behind a WPSuite subscription.
+
 The plugin package itself manages WordPress-side configuration, queue state, runtime files, and status/log access. Actual crawling and deployment are executed by the separately installed `@smart-cloud/publisher-exporter` CLI on the user’s own server, workstation, CI runner, or other queue-runner host.
 
 Optional WPSuite Pro features are not required for the plugin to work. They are additional workflow, convenience, and team/enterprise publishing features. Examples may include:
 
 * Incremental crawl / incremental publish / scheduled workflows.
-* Multiple deployment target profiles.
-* Additional audit-log views and audit artifact convenience lists.
+* Extra Deployment Targets and Scheduler Settings backed by linked WPSuite site configuration.
 * Additional team/workspace-oriented configuration features.
+
+Extra Deployment Targets are selected by key at deploy time, while downloaded job configs keep only the base target plus an optional target override id.
 
 These optional Pro features may be visible in the plugin interface as upgrade-only controls, but they are separate from the fully functional free static publishing workflow described above.
 

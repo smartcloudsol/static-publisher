@@ -41,6 +41,7 @@ final class Plugin
     private const OPTION_KEY = 'smartcloud_static_publisher_config';
     private const OPTION_AUDIT_LOG_KEY = 'smartcloud_static_publisher_audit_log';
     private const OPTION_AUDIT_CURSOR_KEY = 'smartcloud_static_publisher_audit_cursor';
+    private const OPTION_RUNTIME_NONCE_KEY = 'smartcloud_static_publisher_runtime_nonce';
     private const OPTION_QUEUE_MUTATION_LOCK_KEY = 'smartcloud_static_publisher_queue_mutation_lock';
     private const REST_NAMESPACE = 'smartcloud-static-publisher/v1';
 
@@ -71,7 +72,9 @@ final class Plugin
         wp_mkdir_p($paths['runtime']);
         wp_mkdir_p($paths['logs']);
 
-        $this->writeJsonFile($paths['config'], $this->stripLocalOnlyConfigFromRuntimeConfig($this->getConfig()));
+        $this->getRuntimeNonce();
+
+        $this->writeJsonFile($paths['config'], $this->buildRuntimeConfig($this->getConfig()));
         $this->writeJsonFile($paths['queue'], array());
     }
 
@@ -121,18 +124,16 @@ final class Plugin
             return true;
         }
 
-        $providedSiteKey = sanitize_text_field((string) $request->get_header('x-site-key'));
-        if ($providedSiteKey === '') {
+        $providedNonce = sanitize_text_field((string) $request->get_header('x-wp-nonce'));
+        if ($providedNonce === '') {
+            $providedNonce = sanitize_text_field((string) $request->get_header('x-static-publisher-nonce'));
+        }
+
+        if ($providedNonce === '') {
             return false;
         }
 
-        $settings = $this->getWpSuiteSiteSettings();
-        $expectedSiteKey = sanitize_text_field((string) ($settings['siteKey'] ?? ''));
-        if ($expectedSiteKey === '') {
-            return false;
-        }
-
-        return hash_equals($expectedSiteKey, $providedSiteKey);
+        return hash_equals($this->getRuntimeNonce(), $providedNonce);
     }
 
     public function handleGetChangeTokens(\WP_REST_Request $request): \WP_REST_Response
@@ -247,39 +248,6 @@ final class Plugin
         return $data;
     }
 
-    public function hasActiveWpSuiteSubscription(): bool
-    {
-        $identity = $this->getWpSuiteIdentityForJobs();
-        $accountId = isset($identity['accountId']) ? sanitize_text_field((string) $identity['accountId']) : '';
-        $siteId = isset($identity['siteId']) ? sanitize_text_field((string) $identity['siteId']) : '';
-        $siteKey = isset($identity['siteKey']) ? sanitize_text_field((string) $identity['siteKey']) : '';
-
-        if ($accountId === '' || $siteId === '' || $siteKey === '') {
-            return false;
-        }
-
-        $endpoint = trailingslashit($this->getWpSuiteApiBase()) . 'account/' . rawurlencode($accountId) . '/site/' . rawurlencode($siteId) . '/license';
-        $response = wp_remote_get($endpoint, array(
-            'timeout' => 12,
-            'headers' => array(
-                'Accept' => 'application/json',
-                'X-Site-Key' => $siteKey,
-            ),
-        ));
-
-        if (is_wp_error($response)) {
-            return false;
-        }
-
-        $code = (int) wp_remote_retrieve_response_code($response);
-        if ($code < 200 || $code >= 300) {
-            return false;
-        }
-
-        $data = json_decode((string) wp_remote_retrieve_body($response), true);
-        return is_array($data) && !empty($data['config']) && !empty($data['jws']);
-    }
-
     public function getPreferredDefaultCrawlMode(): string
     {
         $identity = $this->getWpSuiteIdentityForJobs();
@@ -294,11 +262,6 @@ final class Plugin
         }
 
         $siteAddressOrigin = $this->resolveSiteAddressOrigin();
-        $deploymentProfiles = $this->sanitizeDeploymentProfilesConfig($input['deploymentProfiles'] ?? array());
-        $defaultDeploymentProfile = $this->sanitizeDeploymentProfileName($input['defaultDeploymentProfile'] ?? '');
-        if ($defaultDeploymentProfile !== '' && !isset($deploymentProfiles[$defaultDeploymentProfile])) {
-            $defaultDeploymentProfile = '';
-        }
 
         return array(
             'sourceOrigin' => $siteAddressOrigin,
@@ -317,10 +280,9 @@ final class Plugin
             'blockedSearchFragments' => $this->sanitizeStringList($input['blockedSearchFragments'] ?? array()),
             'extraReplacements' => $this->sanitizeMap($input['extraReplacements'] ?? array()),
             'postCrawlCopyMap' => $this->sanitizeMap($input['postCrawlCopyMap'] ?? array()),
-            'defaultDeploymentProfile' => $defaultDeploymentProfile,
-            'deploymentProfiles' => $deploymentProfiles,
-            'scheduler' => $this->sanitizeSchedulerConfig($input['scheduler'] ?? array()),
-            'wpsuite' => $this->getWpSuiteIdentityForJobs(),
+            'defaultDeploymentProfile' => '',
+            'deploymentProfiles' => array(),
+            'scheduler' => $this->sanitizeSchedulerConfig(array()),
             'logDir' => $this->normalizeStorageRelativePath((string) ($input['logDir'] ?? 'logs'), 'logs'),
             'verbose' => !empty($input['verbose']),
             'logLevel' => $this->sanitizeLogLevel($input['logLevel'] ?? 'info'),
@@ -714,23 +676,11 @@ final class Plugin
         );
     }
 
-    public function stripProConfigFromWpStorage(array $config): array
-    {
-        $stripped = $config;
-        $stripped['scheduler'] = array(
-            'enabled' => false,
-            'timezone' => 'UTC',
-            'rules' => array(),
-        );
-        $stripped['defaultDeploymentProfile'] = '';
-        $stripped['deploymentProfiles'] = array();
-        return $stripped;
-    }
-
     public function stripRuntimeOnlyConfigFromWpStorage(array $config): array
     {
         $stripped = $config;
         unset($stripped['wpsuite']);
+        unset($stripped['deploymentTargetOverride']);
         return $stripped;
     }
 
@@ -738,7 +688,26 @@ final class Plugin
     {
         $stripped = $config;
         unset($stripped['exporterDir']);
+        unset($stripped['scheduler']);
+        unset($stripped['defaultDeploymentProfile']);
+        unset($stripped['deploymentProfiles']);
+        unset($stripped['wpsuite']);
         return $stripped;
+    }
+
+    public function buildRuntimeConfig(array $config, string $deploymentTargetOverride = ''): array
+    {
+        $runtime = $this->stripLocalOnlyConfigFromRuntimeConfig($config);
+        $runtime['wpsuite'] = $this->getWpSuiteRuntimeConfig();
+
+        $override = $this->sanitizeDeploymentProfileName($deploymentTargetOverride);
+        if ($override !== '') {
+            $runtime['deploymentTargetOverride'] = $override;
+        } else {
+            unset($runtime['deploymentTargetOverride']);
+        }
+
+        return $runtime;
     }
 
     private function getWpSuiteSiteSettings(): array
@@ -758,7 +727,62 @@ final class Plugin
             'accountId' => sanitize_text_field((string) ($raw['accountId'] ?? '')),
             'siteId' => sanitize_text_field((string) ($raw['siteId'] ?? '')),
             'siteKey' => sanitize_text_field((string) ($raw['siteKey'] ?? '')),
+            'lastUpdate' => isset($raw['lastUpdate']) ? max(0, (int) $raw['lastUpdate']) : 0,
             'subscriber' => !empty($raw['subscriber']),
+        );
+    }
+
+    private function getWpSuiteUploadPaths(): array
+    {
+        $uploadDirInfo = wp_upload_dir();
+        $slug = defined('SMARTCLOUD_WPSUITE_SLUG') ? SMARTCLOUD_WPSUITE_SLUG : 'hub-for-wpsuiteio';
+
+        return array(
+            'dir' => trailingslashit((string) ($uploadDirInfo['basedir'] ?? '')) . $slug . '/',
+            'url' => trailingslashit((string) ($uploadDirInfo['baseurl'] ?? '')) . $slug . '/',
+        );
+    }
+
+    private function generateRuntimeNonce(): string
+    {
+        try {
+            return bin2hex(random_bytes(24));
+        } catch (\Throwable $error) {
+            return wp_generate_password(48, false, false);
+        }
+    }
+
+    public function getRuntimeNonce(): string
+    {
+        $existing = get_option(self::OPTION_RUNTIME_NONCE_KEY, '');
+        $nonce = is_string($existing) ? sanitize_text_field($existing) : '';
+        if ($nonce !== '') {
+            return $nonce;
+        }
+
+        $nonce = $this->generateRuntimeNonce();
+        update_option(self::OPTION_RUNTIME_NONCE_KEY, $nonce, false);
+        return $nonce;
+    }
+
+    public function getWpSuiteRuntimeConfig(): array
+    {
+        $settings = $this->getWpSuiteSiteSettings();
+        $uploadPaths = $this->getWpSuiteUploadPaths();
+
+        return array(
+            'accountId' => $settings['accountId'],
+            'siteId' => $settings['siteId'],
+            'subscriber' => !empty($settings['subscriber']),
+            'apiBase' => $this->getWpSuiteApiBase(),
+            'nonce' => $this->getRuntimeNonce(),
+            'uploadUrl' => sanitize_url((string) ($uploadPaths['url'] ?? '')),
+            'siteSettings' => array(
+                'accountId' => $settings['accountId'],
+                'siteId' => $settings['siteId'],
+                'lastUpdate' => max(0, (int) ($settings['lastUpdate'] ?? 0)),
+                'subscriber' => !empty($settings['subscriber']),
+            ),
         );
     }
 

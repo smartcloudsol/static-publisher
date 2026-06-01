@@ -2,6 +2,8 @@ import { getWpSuite } from "@smart-cloud/wpsuite-core";
 
 export type ProConfigPatch = {
   scheduler?: unknown;
+  defaultDeploymentProfile?: string;
+  deploymentProfiles?: unknown;
 };
 
 export type ProAccessStatus = {

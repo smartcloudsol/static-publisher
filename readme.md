@@ -306,16 +306,16 @@ Notes:
 
 ## Multi-Target Deploy From One Crawl
 
-Static Publisher treats the top-level target settings as your base target. Extra targets live under `deploymentProfiles` and are selected only when you pass `--profile` during `deploy` or `invalidate`.
+Static Publisher treats the top-level target settings as your base target. In the WordPress plugin workflow, Extra Deployment Targets are managed under `Pro Features -> Extra Deployment Targets` and stored in the linked WPSuite site config, not inside the local `publisher.config.json` or WordPress option payload.
 
 Typical workflow:
 
 - Crawl once from the source site into the local static artifact.
 - Deploy the artifact to the base target with a normal `deploy`.
-- Reuse that same artifact for `staging`, `production`, or client-specific targets with `--profile`.
+- Reuse that same artifact for `staging`, `production`, or client-specific targets by selecting an extra target key for deploy or invalidate.
 - Avoid re-crawling the origin for every environment promotion.
 
-Example:
+Example downloaded job config:
 
 ```json
 {
@@ -328,31 +328,18 @@ Example:
   "cloudFront": {
     "distributionId": "E2STAGING123"
   },
-  "deploymentProfiles": {
-    "prod": {
-      "targetOrigin": "https://example.com",
-      "s3": {
-        "bucket": "my-site-prod"
-      },
-      "cloudFront": {
-        "distributionId": "E2PROD456"
-      }
-    }
-  }
+  "deploymentTargetOverride": "prod"
 }
 ```
 
-Run it like this:
+When the exporter is running with access to the linked WPSuite site config, you can also select the extra target explicitly via CLI:
 
 ```bash
-PUBLISHER_CONFIG=./publisher.config.json npx @smart-cloud/publisher-exporter crawl
-PUBLISHER_CONFIG=./publisher.config.json npx @smart-cloud/publisher-exporter deploy
-PUBLISHER_CONFIG=./publisher.config.json npx @smart-cloud/publisher-exporter invalidate
 PUBLISHER_CONFIG=./publisher.config.json npx @smart-cloud/publisher-exporter deploy --profile prod
 PUBLISHER_CONFIG=./publisher.config.json npx @smart-cloud/publisher-exporter invalidate --profile prod
 ```
 
-You can also select the profile via environment variable:
+You can also select the target via environment variable:
 
 ```bash
 PUBLISHER_DEPLOY_PROFILE=prod PUBLISHER_CONFIG=./publisher.config.json npx @smart-cloud/publisher-exporter deploy
@@ -360,11 +347,11 @@ PUBLISHER_DEPLOY_PROFILE=prod PUBLISHER_CONFIG=./publisher.config.json npx @smar
 
 Notes:
 
-- Without `--profile`, deploy and invalidate use the base target from the top-level config.
-- Profile overrides currently support `targetOrigin`, `s3`, `cloudFront`, and profile-specific `extraReplacements`.
-- If a profile changes `targetOrigin`, the base crawl output should use `urlRewriteMode: "absolute"`; this lets deploy rewrite the already-crawled artifact to the selected profile domain without re-crawling.
-- If your crawl output is already relative/root-relative and only the bucket/CDN differs, you can still reuse the same artifact across profiles.
-- For advanced raw-config automation, you can still set `defaultDeploymentProfile` manually in `publisher.config.json`, but the admin UI treats the top-level target as the default path.
+- Without `deploymentTargetOverride`, `--profile`, or `PUBLISHER_DEPLOY_PROFILE`, deploy and invalidate use the base target from the top-level config.
+- Extra target overrides currently support `targetOrigin`, `s3`, `cloudFront`, and profile-specific `extraReplacements`.
+- If an extra target changes `targetOrigin`, the base crawl output should use `urlRewriteMode: "absolute"`; this lets deploy rewrite the already-crawled artifact to the selected domain without re-crawling.
+- If your crawl output is already relative/root-relative and only the bucket or CDN differs, you can still reuse the same artifact across targets.
+- Scheduler settings and extra targets stay in the linked WPSuite site config; downloaded runtime configs keep only the base target plus an optional `deploymentTargetOverride`.
 
 ## Queue Workflow
 
@@ -381,7 +368,7 @@ Queued jobs are written to `runtime/queue.json` and processed by your external N
 
 ### Scheduler Rules
 
-PRO scheduler rules are stored in the runtime config and evaluated by `publisher-exporter queue-runner` at the start of each external runner invocation.
+WPSuite-linked scheduler rules are loaded from the linked site config and evaluated by `publisher-exporter queue-runner` at the start of each external runner invocation. The local runtime config keeps only the base target settings plus any selected `deploymentTargetOverride`.
 
 - Scheduler does not spawn a worker by itself. Use system cron, systemd timer, or Windows Task Scheduler to start `publisher-exporter queue-runner` regularly.
 - A 1-minute runner tick is the recommended cadence. Each tick may auto-enqueue matching rules into `runtime/queue.json`, then the normal queue flow processes them.
@@ -632,7 +619,7 @@ Example:
 
 If `generated404RequestPath` is set, the crawler requests that source path, expects an actual HTTP `404` response, captures the rendered DOM into the matching static output path such as `/not-found/preview/index.html`, and skips page-link discovery from that capture. Leave it empty or omit it to disable the feature.
 
-Extended example with base target and extra targets:
+Example downloaded config with a selected extra target override:
 
 ```json
 {
@@ -641,19 +628,11 @@ Extended example with base target and extra targets:
   "s3": {
     "bucket": "my-site-staging"
   },
-  "deploymentProfiles": {
-    "prod": {
-      "targetOrigin": "https://example.com",
-      "s3": {
-        "bucket": "my-site-prod"
-      },
-      "cloudFront": {
-        "distributionId": "E1234567890"
-      }
-    }
-  }
+  "deploymentTargetOverride": "prod"
 }
 ```
+
+The `prod` target definition itself is resolved from the linked WPSuite site config when the exporter boots from WordPress job metadata.
 
 ## Validation
 

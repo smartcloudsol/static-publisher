@@ -290,17 +290,13 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         $config = $this->plugin->sanitizeConfig($data);
         $resolvedConfig = $this->plugin->getResolvedConfig($config);
 
-        $persistProConfigRemotely = strtolower((string) $request->get_header('x-wpsuite-pro-config')) === 'remote';
         $storedConfig = $this->plugin->stripRuntimeOnlyConfigFromWpStorage($config);
-        if ($persistProConfigRemotely) {
-            $storedConfig = $this->plugin->stripProConfigFromWpStorage($storedConfig);
-        }
 
         update_option(self::OPTION_KEY, $storedConfig, false);
 
         $paths = $this->plugin->getRuntimePaths();
         wp_mkdir_p($paths['runtime']);
-        $this->plugin->writeJsonFile($paths['config'], $this->plugin->stripLocalOnlyConfigFromRuntimeConfig($resolvedConfig));
+        $this->plugin->writeJsonFile($paths['config'], $this->plugin->buildRuntimeConfig($config));
 
         return new WP_REST_Response(array(
             'success' => true,
@@ -333,13 +329,6 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         if (!in_array($command, array('publish', 'crawl'), true)) {
             $crawlMode = 'full';
         }
-        if ($crawlMode === 'incremental' && !$this->plugin->hasActiveWpSuiteSubscription()) {
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => __('Incremental crawl requires an active WPSuite subscription.', 'smartcloud-static-publisher'),
-            ), 403);
-        }
-
         $url = '';
         if ($command === 'url') {
             $url = isset($data['url']) ? sanitize_text_field((string) $data['url']) : '';
@@ -383,13 +372,13 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
                 'message' => __('Unknown deployment profile.', 'smartcloud-static-publisher'),
             ), 400);
         }
-        $this->plugin->writeJsonFile($paths['config'], $this->plugin->stripLocalOnlyConfigFromRuntimeConfig($resolvedConfig));
+        $this->plugin->writeJsonFile($paths['config'], $this->plugin->buildRuntimeConfig($this->plugin->getConfig()));
         $job = array(
             'id' => wp_generate_uuid4(),
             'command' => $command,
             'enqueueSource' => 'manual',
             'url' => $url,
-            'wpsuite' => $this->plugin->getWpSuiteIdentityForJobs(),
+            'wpsuite' => $this->plugin->getWpSuiteRuntimeConfig(),
             'status' => 'queued',
             'createdAt' => gmdate('c'),
             'createdBy' => get_current_user_id(),
@@ -533,7 +522,13 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
             ), 404);
         }
 
-        $payload = $this->plugin->buildJobDownloadPayload($job, $this->plugin->stripLocalOnlyConfigFromRuntimeConfig($this->plugin->getConfig()));
+        $payload = $this->plugin->buildJobDownloadPayload(
+            $job,
+            $this->plugin->buildRuntimeConfig(
+                $this->plugin->getConfig(),
+                (string) ($job['deploymentProfile'] ?? '')
+            )
+        );
 
         return new WP_REST_Response(array(
             'success' => true,
@@ -708,12 +703,6 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
 
     public function handleGetAuditLog(WP_REST_Request $request): WP_REST_Response
     {
-        if (!$this->plugin->hasActiveWpSuiteSubscription()) {
-            return new WP_REST_Response(array(
-                'message' => __('Audit Logs requires an active WPSuite subscription.', 'smartcloud-static-publisher'),
-            ), 403);
-        }
-
         $this->plugin->ingestRuntimeAuditEvents();
 
         $page = max(1, absint($request->get_param('page') ?? 1));
@@ -773,12 +762,6 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
 
     public function handleDownloadAuditArtifact(WP_REST_Request $request)
     {
-        if (!$this->plugin->hasActiveWpSuiteSubscription()) {
-            return new WP_REST_Response(array(
-                'message' => __('Audit Logs requires an active WPSuite subscription.', 'smartcloud-static-publisher'),
-            ), 403);
-        }
-
         $archiveKey = sanitize_file_name((string) ($request->get_param('archive') ?? ''));
         $file = trim((string) ($request->get_param('file') ?? ''));
         $path = $this->plugin->resolveAuditArchiveFilePath($archiveKey, $file);
