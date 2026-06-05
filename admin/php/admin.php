@@ -137,6 +137,7 @@ class Admin
             'version' => VERSION,
             'restUrl' => rest_url(self::REST_NAMESPACE),
             'nonce' => wp_create_nonce('wp_rest'),
+            'apiBase' => $this->plugin->getWpSuiteRuntimeConfig()['apiBase'] ?? '',
             'settings' => $this->plugin->getConfig(),
             'runtime' => array(
                 'paths' => $this->plugin->getRuntimeRelativePaths(),

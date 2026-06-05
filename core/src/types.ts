@@ -69,6 +69,14 @@ export interface PublisherWpSuiteBootstrapInput {
   siteOrigin?: string;
 }
 
+export interface PublisherRuntimeWpSuiteConfig {
+  apiBase?: string;
+  runtimeToken?: string;
+  uploadUrl?: string;
+  siteSettings?: Partial<PublisherWpSuiteSiteSettings> | null;
+  subscriptionType?: SubscriptionType;
+}
+
 export interface PublisherRemoteConfig {
   scheduler?: PublisherSchedulerConfig;
   deploymentProfiles?: PublisherDeploymentProfiles;

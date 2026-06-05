@@ -3893,7 +3893,7 @@ export default function Main({ store }: MainProps) {
                                 "blocked-query-fragments",
                               )}
                               description={__(
-                                "URLs containing these query fragments are skipped.",
+                                "URLs containing these query fragments are skipped. Add environment- or plugin-specific preview markers here when needed.",
                                 TEXT_DOMAIN,
                               )}
                               value={blockedFragmentsText}
@@ -3902,6 +3902,10 @@ export default function Main({ store }: MainProps) {
                                   event.currentTarget.value,
                                 )
                               }
+                              placeholder={__(
+                                "elementor-preview\ntrp-edit-translation",
+                                TEXT_DOMAIN,
+                              )}
                               autosize
                               minRows={3}
                             />

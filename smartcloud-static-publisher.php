@@ -44,6 +44,7 @@ final class Plugin
     private const OPTION_RUNTIME_NONCE_KEY = 'smartcloud_static_publisher_runtime_nonce';
     private const OPTION_QUEUE_MUTATION_LOCK_KEY = 'smartcloud_static_publisher_queue_mutation_lock';
     private const REST_NAMESPACE = 'smartcloud-static-publisher/v1';
+    private const CHANGE_TOKEN_AUTH_HEADER = 'x-static-publisher-token';
 
     private static ?Plugin $instance = null;
     private ?Admin $admin = null;
@@ -120,20 +121,12 @@ final class Plugin
 
     public function canReadChangeTokens(\WP_REST_Request $request): bool
     {
-        if (current_user_can('manage_options')) {
-            return true;
-        }
-
-        $providedNonce = sanitize_text_field((string) $request->get_header('x-wp-nonce'));
-        if ($providedNonce === '') {
-            $providedNonce = sanitize_text_field((string) $request->get_header('x-static-publisher-nonce'));
-        }
-
-        if ($providedNonce === '') {
+        $providedToken = sanitize_text_field((string) $request->get_header(self::CHANGE_TOKEN_AUTH_HEADER));
+        if ($providedToken === '') {
             return false;
         }
 
-        return hash_equals($this->getRuntimeNonce(), $providedNonce);
+        return hash_equals($this->getRuntimeNonce(), $providedToken);
     }
 
     public function handleGetChangeTokens(\WP_REST_Request $request): \WP_REST_Response
@@ -482,10 +475,16 @@ final class Plugin
         }
         if (isset($job['wpsuite']) && is_array($job['wpsuite'])) {
             $job['wpsuite'] = array(
-                'accountId' => sanitize_text_field((string) ($job['wpsuite']['accountId'] ?? '')),
-                'siteId' => sanitize_text_field((string) ($job['wpsuite']['siteId'] ?? '')),
-                'subscriber' => !empty($job['wpsuite']['subscriber']),
                 'apiBase' => sanitize_text_field((string) ($job['wpsuite']['apiBase'] ?? '')),
+                'runtimeToken' => sanitize_text_field((string) ($job['wpsuite']['runtimeToken'] ?? ($job['wpsuite']['nonce'] ?? ''))),
+                'uploadUrl' => sanitize_url((string) ($job['wpsuite']['uploadUrl'] ?? '')),
+                'subscriptionType' => sanitize_text_field((string) ($job['wpsuite']['subscriptionType'] ?? '')),
+                'siteSettings' => array(
+                    'accountId' => sanitize_text_field((string) ($job['wpsuite']['siteSettings']['accountId'] ?? ($job['wpsuite']['accountId'] ?? ''))),
+                    'siteId' => sanitize_text_field((string) ($job['wpsuite']['siteSettings']['siteId'] ?? ($job['wpsuite']['siteId'] ?? ''))),
+                    'lastUpdate' => isset($job['wpsuite']['siteSettings']['lastUpdate']) ? max(0, (int) $job['wpsuite']['siteSettings']['lastUpdate']) : 0,
+                    'subscriber' => !empty($job['wpsuite']['siteSettings']['subscriber']) || !empty($job['wpsuite']['subscriber']),
+                ),
             );
         }
         if (isset($job['crawlMode'])) {
@@ -771,11 +770,8 @@ final class Plugin
         $uploadPaths = $this->getWpSuiteUploadPaths();
 
         return array(
-            'accountId' => $settings['accountId'],
-            'siteId' => $settings['siteId'],
-            'subscriber' => !empty($settings['subscriber']),
             'apiBase' => $this->getWpSuiteApiBase(),
-            'nonce' => $this->getRuntimeNonce(),
+            'runtimeToken' => $this->getRuntimeNonce(),
             'uploadUrl' => sanitize_url((string) ($uploadPaths['url'] ?? '')),
             'siteSettings' => array(
                 'accountId' => $settings['accountId'],

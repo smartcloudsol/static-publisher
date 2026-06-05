@@ -276,6 +276,9 @@ No. SDK deploy now skips unchanged files using S3 ETag + size fast checks, with 
 = Can pages and assets use different concurrency values? =
 Yes. `concurrency` controls parallel page rendering workers, `assetDownloadConcurrency` controls the later asset download phase, and `rewriteConcurrency` controls the final text rewrite pass. If `rewriteConcurrency` is omitted it falls back to `assetDownloadConcurrency`, so existing configurations keep the earlier behavior.
 
+= How should I use blocked query fragments? =
+Use `blockedSearchFragments` for preview or editor query patterns that must never enter the crawl queue. The setting is empty by default. If your WordPress setup exposes plugin-specific preview URLs, add those fragments explicitly to your config. Typical examples include page-builder previews, WordPress Customizer preview parameters, multilingual editor preview flags, and similar per-plugin markers. This matters because exported page output paths ignore query strings, so a preview URL can overwrite the canonical output for the same page path.
+
 = Why is there a generator meta tag in exported HTML? =
 Sites without an active WPSuite subscription receive this tag in exported HTML pages:
 

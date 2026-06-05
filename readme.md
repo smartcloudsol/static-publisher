@@ -609,6 +609,7 @@ Example:
     "@wp-root/wp-content/uploads/wpsuite-static/": "/wpsuite/wp-content/uploads/wpsuite-static/"
   },
   "blockedPathPrefixes": ["/wp-admin", "/wp-login.php", "/wp-json"],
+  "blockedSearchFragments": [],
   "concurrency": 1,
   "assetDownloadConcurrency": 6,
   "rewriteConcurrency": 6,
@@ -618,6 +619,8 @@ Example:
 ```
 
 If `generated404RequestPath` is set, the crawler requests that source path, expects an actual HTTP `404` response, captures the rendered DOM into the matching static output path such as `/not-found/preview/index.html`, and skips page-link discovery from that capture. Leave it empty or omit it to disable the feature.
+
+`blockedSearchFragments` is empty by default. If your site or plugin stack exposes editor or preview URLs through plugin-specific query parameters, cached markup, or environment-specific tooling, add those fragments explicitly to your config. Typical examples include page-builder previews, WordPress Customizer preview parameters, multilingual editor preview flags, and similar per-plugin markers. This matters because page output paths ignore query strings, so allowing preview URLs into the crawl can overwrite the canonical output for the same page path.
 
 Example downloaded config with a selected extra target override:
 

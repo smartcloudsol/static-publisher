@@ -28,6 +28,7 @@ export type {
   PublisherDeploymentProfiles,
   PublisherExtraDeploymentTargets,
   PublisherJobCommand,
+  PublisherRuntimeWpSuiteConfig,
   PublisherSchedulerConfig,
   PublisherSchedulerRule,
   PublisherRemoteConfig,

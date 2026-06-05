@@ -8,6 +8,7 @@ import type {
 export type PublisherPlugin = {
   restUrl?: string;
   nonce?: string;
+  apiBase?: string;
   settings?: unknown;
   view?: string;
 };

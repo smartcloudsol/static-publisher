@@ -594,6 +594,18 @@ const pages = {
           TEXT_DOMAIN,
         )}
       </Text>
+      <Text mt="xs">
+        {__(
+          "Use this list for plugin- or environment-specific preview/editor query markers that should never enter the crawl queue. Common examples include page-builder previews such as 'elementor-preview' and multilingual editor previews such as 'trp-edit-translation'.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+      <Text mt="xs">
+        {__(
+          "This matters because exported page output paths ignore query strings, so a preview URL can overwrite the canonical output for the same page path if it is allowed into discovery.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
 
       <Title order={3} mt="md" id="s3-bucket">
         <span className="highlightable">{__("S3 Bucket", TEXT_DOMAIN)}</span>
