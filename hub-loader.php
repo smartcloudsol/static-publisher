@@ -6,7 +6,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-const SMARTCLOUD_WPSUITE_STATIC_PUBLISHER_HUB_VERSION = '2.5.2';
+const SMARTCLOUD_WPSUITE_STATIC_PUBLISHER_HUB_VERSION = '2.5.3';
 
 final class StaticPublisherHubLoader
 {
@@ -64,7 +64,7 @@ final class StaticPublisherHubLoader
 
         $connectSuffix = add_submenu_page(
             SMARTCLOUD_WPSUITE_SLUG,
-            __('Connect your Site to WPSuite', 'smartcloud-static-publisher'),
+            __('Connect your Site to WP Suite', 'smartcloud-static-publisher'),
             __('Connect your Site', 'smartcloud-static-publisher'),
             'manage_options',
             SMARTCLOUD_WPSUITE_SLUG,

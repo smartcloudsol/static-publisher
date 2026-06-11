@@ -13,7 +13,9 @@ Reliable static export for WordPress with sitemap-based crawl, browser rendering
 
 == Description ==
 
-SmartCloud Static Publisher is a WordPress plugin + Node.js exporter workflow for deterministic static publishing.
+Static Publisher is a WordPress plugin + Node.js exporter workflow for deterministic static publishing.
+
+Static Publisher is part of the WP Suite product family by Smart Cloud Solutions, Inc. WP Suite keeps WordPress as the CMS and editing layer, while optional connected features can extend selected workflows into modular AWS-backed services for identity, AI, APIs, workflows, protected routes, and static delivery. The free Static Publisher features described here do not require a WP Suite account, subscription, or WP Suite-managed AWS backend; you control any AWS credentials and target infrastructure you configure for publishing.
 
 Project repository and extended documentation:
 https://github.com/smartcloudsol/static-publisher
@@ -59,7 +61,7 @@ Actual crawling and deployment are executed by your own Node runtime using this 
 
 == Free and Premium Usage Notice ==
 
-SmartCloud Static Publisher is fully functional in Free mode and does not require a WPSuite account, subscription, trial period, or paid service to perform its core static publishing workflow.
+SmartCloud Static Publisher is fully functional in Free mode and does not require a WP Suite account, subscription, trial period, or paid service to perform its core static publishing workflow.
 
 In Free mode, the plugin supports the complete static publishing flow:
 
@@ -74,21 +76,21 @@ In Free mode, the plugin supports the complete static publishing flow:
 
 Free mode includes S3 deployment and CloudFront invalidation. These are not paid-only features.
 
-Audit Logs is also part of the main Static Publisher navigation and is not gated behind a WPSuite subscription.
+Audit Logs is also part of the main Static Publisher navigation and is not gated behind a WP Suite subscription.
 
 The plugin package itself manages WordPress-side configuration, queue state, runtime files, and status/log access. Actual crawling and deployment are executed by the separately installed `@smart-cloud/publisher-exporter` CLI on the user’s own server, workstation, CI runner, or other queue-runner host.
 
-Optional WPSuite Pro features are not required for the plugin to work. They are additional workflow, convenience, and team/enterprise publishing features. Examples may include:
+Optional WP Suite Pro features are not required for the plugin to work. They are additional workflow, convenience, and team/enterprise publishing features. Examples may include:
 
 * Incremental crawl / incremental publish / scheduled workflows.
-* Extra Deployment Targets and Scheduler Settings backed by linked WPSuite site configuration.
+* Extra Deployment Targets and Scheduler Settings backed by linked WP Suite site configuration.
 * Additional team/workspace-oriented configuration features.
 
 Extra Deployment Targets are selected by key at deploy time, while downloaded job configs keep only the base target plus an optional target override id.
 
 These optional Pro features may be visible in the plugin interface as upgrade-only controls, but they are separate from the fully functional free static publishing workflow described above.
 
-When no active WPSuite subscription is connected, SmartCloud Static Publisher remains usable for full static crawl/publish/deploy workflows. There is no time limit, export quota, forced trial expiry, or required payment for the core static publishing functionality.
+When no active WP Suite subscription is connected, SmartCloud Static Publisher remains usable for full static crawl/publish/deploy workflows. There is no time limit, export quota, forced trial expiry, or required payment for the core static publishing functionality.
 
 == Installation ==
 
@@ -237,6 +239,11 @@ Example `postCrawlCopyMap` sources:
 
 If you inspect the raw `queue-runner-heartbeat.json`, the `runtimeDir` and `exporterDir` values reflect the queue runner host paths. That is expected and does not break WordPress-side queue state handling.
 
+== Machine-readable resources ==
+
+* Plugin manifest: https://wpsuite.io/.well-known/ai-plugin.json
+* OpenAPI spec (backend): https://wpsuite.io/.well-known/openapi.yaml
+
 == Frequently Asked Questions ==
 
 = Does this plugin run crawling and deploy from PHP? =
@@ -280,11 +287,11 @@ Yes. `concurrency` controls parallel page rendering workers, `assetDownloadConcu
 Use `blockedSearchFragments` for preview or editor query patterns that must never enter the crawl queue. The setting is empty by default. If your WordPress setup exposes plugin-specific preview URLs, add those fragments explicitly to your config. Typical examples include page-builder previews, WordPress Customizer preview parameters, multilingual editor preview flags, and similar per-plugin markers. This matters because exported page output paths ignore query strings, so a preview URL can overwrite the canonical output for the same page path.
 
 = Why is there a generator meta tag in exported HTML? =
-Sites without an active WPSuite subscription receive this tag in exported HTML pages:
+Sites without an active WP Suite subscription receive this tag in exported HTML pages:
 
 `<meta name="generator" content="WPSuite.io Static Publisher" />`
 
-The exporter adds it during HTML rewrite only once per file, so repeated rewrite/deploy passes do not duplicate it. Sites with an active WPSuite subscription do not receive this tag.
+The exporter adds it during HTML rewrite only once per file, so repeated rewrite/deploy passes do not duplicate it. Sites with an active WP Suite subscription do not receive this tag.
 
 = Can I pass temporary AWS credentials from admin? =
 Yes, for `publish`, `deploy`, and `invalidate` jobs.
@@ -366,9 +373,9 @@ This plugin/workflow may integrate with the following external services, dependi
      - AWS Service Terms: https://aws.amazon.com/service-terms/
      - AWS Privacy: https://aws.amazon.com/privacy/
 
-4. **WPSuite platform connection (optional; site/workspace linking & shared features)**
+4. **WP Suite platform connection (optional; site/workspace linking & shared features)**
    - **When it applies:**
-     When you use **WP Admin → SmartCloud → Connect your Site to WPSuite** to link this WordPress site to a WPSuite workspace, or to switch/disconnect later.
+     When you use **WP Admin → SmartCloud → Connect your Site to WP Suite** to link this WordPress site to a WP Suite workspace, or to switch/disconnect later.
    - **What it’s used for:**
      Storing and retrieving Pro feature configuration (e.g., API/chatbot/feature settings) and enabling an admin-side preview experience so you can try Pro features in WP Admin before enabling them on the live site.
    - **What data may be sent:**
@@ -379,9 +386,9 @@ This plugin/workflow may integrate with the following external services, dependi
      - WPSuite.io Privacy Policy: https://wpsuite.io/privacy-policy
      - WPSuite.io Terms of Use: https://wpsuite.io/terms-of-use
 
-5. **Amazon Cognito (optional; authentication for WPSuite Hub and/or protected APIs)**
+5. **Amazon Cognito (optional; authentication for WP Suite Hub and/or protected APIs)**
    - **When it applies:**
-     - When using the **WPSuite.io Hub**, users authenticate (sign in / sign up) before creating/selecting a workspace and linking a site.
+     - When using the **WP Suite Hub**, users authenticate (sign in / sign up) before creating/selecting a workspace and linking a site.
      - If a plugin is configured to access protected endpoints that rely on Cognito, authentication/token flows may also be used for those requests.
    - **What it’s used for:**
      User authentication and token-based authorization for subsequent API calls (e.g., to WPSuite.io APIs).
@@ -390,7 +397,7 @@ This plugin/workflow may integrate with the following external services, dependi
      - AWS Privacy: https://aws.amazon.com/privacy/
 
 6. **Stripe (optional; subscription/purchase flow)**
-   - **When it applies:** Only when the user opens the optional WPSuite subscription / purchase flow in the shared admin component.
+   - **When it applies:** Only when the user opens the optional WP Suite subscription / purchase flow in the shared admin component.
    - **What it’s used for:** Displaying hosted pricing/subscription UI for optional paid features.
    - **What data may be sent:** Browser/session data required by Stripe to render the hosted purchase UI and process the purchase flow.
    - **Links:**
