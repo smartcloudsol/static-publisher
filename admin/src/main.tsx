@@ -570,6 +570,10 @@ function normalizePublisherConfig(config: PublisherConfig): PublisherConfig {
   const deploymentProfiles = normalizeDeploymentProfileMap(
     config.deploymentProfiles,
   );
+  const scheduler = sanitizeSchedulerFromRemote(
+    config.scheduler,
+    DEFAULT_CONFIG.scheduler,
+  );
 
   const concurrency = Math.max(1, Number(config.concurrency || 1));
   const assetDownloadConcurrency = Math.max(
@@ -587,6 +591,7 @@ function normalizePublisherConfig(config: PublisherConfig): PublisherConfig {
     concurrency,
     assetDownloadConcurrency,
     rewriteConcurrency,
+    scheduler,
     defaultDeploymentProfile: "",
     deploymentProfiles,
   };

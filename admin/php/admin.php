@@ -314,7 +314,7 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         $command = isset($data['command']) ? sanitize_text_field((string) $data['command']) : '';
         $allowedCommands = array('publish', 'crawl', 'deploy', 'invalidate', 'retry-timeouts', 'url');
         $allowedCrawlModes = array('full', 'incremental');
-        $defaultCrawlMode = $this->plugin->getPreferredDefaultCrawlMode();
+        $defaultCrawlMode = 'full';
 
         if (!in_array($command, $allowedCommands, true)) {
             return new WP_REST_Response(array(
@@ -366,13 +366,6 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
 
         $paths = $this->plugin->getRuntimePaths();
         wp_mkdir_p($paths['runtime']);
-        $resolvedConfig = $this->plugin->getResolvedConfig();
-        if ($deploymentProfile !== '' && empty($resolvedConfig['deploymentProfiles'][$deploymentProfile])) {
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => __('Unknown deployment profile.', 'smartcloud-static-publisher'),
-            ), 400);
-        }
         $this->plugin->writeJsonFile($paths['config'], $this->plugin->buildRuntimeConfig($this->plugin->getConfig()));
         $job = array(
             'id' => wp_generate_uuid4(),

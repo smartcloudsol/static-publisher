@@ -171,81 +171,7 @@ final class Plugin
 
     public function getResolvedConfig(?array $localConfig = null): array
     {
-        $baseConfig = is_array($localConfig) ? $this->sanitizeConfig($localConfig) : $this->getConfig();
-        return $this->mergeRemotePublisherConfig($baseConfig);
-    }
-
-    private function mergeRemotePublisherConfig(array $config): array
-    {
-        $remoteSettings = $this->getRemotePublisherSettings();
-        if (!is_array($remoteSettings)) {
-            return $config;
-        }
-
-        if (array_key_exists('deploymentProfiles', $remoteSettings)) {
-            $config['deploymentProfiles'] = $this->sanitizeDeploymentProfilesConfig($remoteSettings['deploymentProfiles']);
-        }
-
-        if (array_key_exists('defaultDeploymentProfile', $remoteSettings)) {
-            $defaultDeploymentProfile = $this->sanitizeDeploymentProfileName($remoteSettings['defaultDeploymentProfile']);
-            $config['defaultDeploymentProfile'] = isset($config['deploymentProfiles'][$defaultDeploymentProfile])
-                ? $defaultDeploymentProfile
-                : '';
-        }
-
-        if (array_key_exists('scheduler', $remoteSettings)) {
-            $config['scheduler'] = $this->sanitizeSchedulerConfig($remoteSettings['scheduler']);
-        }
-
-        return $config;
-    }
-
-    private function getRemotePublisherSettings(): ?array
-    {
-        $identity = $this->getWpSuiteIdentityForJobs();
-        $accountId = isset($identity['accountId']) ? sanitize_text_field((string) $identity['accountId']) : '';
-        $siteId = isset($identity['siteId']) ? sanitize_text_field((string) $identity['siteId']) : '';
-        $siteKey = isset($identity['siteKey']) ? sanitize_text_field((string) $identity['siteKey']) : '';
-
-        if ($accountId === '' || $siteId === '' || $siteKey === '') {
-            return null;
-        }
-
-        $endpoint = trailingslashit($this->getWpSuiteApiBase()) . 'account/' . rawurlencode($accountId) . '/site/' . rawurlencode($siteId) . '/settings';
-        $response = wp_remote_get($endpoint, array(
-            'timeout' => 12,
-            'headers' => array(
-                'Accept' => 'application/json',
-                'X-Site-Key' => $siteKey,
-                'X-Plugin' => 'publisher',
-            ),
-        ));
-
-        if (is_wp_error($response)) {
-            return null;
-        }
-
-        $code = (int) wp_remote_retrieve_response_code($response);
-        if ($code < 200 || $code >= 300) {
-            return null;
-        }
-
-        $data = json_decode((string) wp_remote_retrieve_body($response), true);
-        if (!is_array($data)) {
-            return null;
-        }
-
-        if (isset($data['settings']) && is_array($data['settings'])) {
-            return $data['settings'];
-        }
-
-        return $data;
-    }
-
-    public function getPreferredDefaultCrawlMode(): string
-    {
-        $identity = $this->getWpSuiteIdentityForJobs();
-        return !empty($identity['subscriber']) ? 'incremental' : 'full';
+        return is_array($localConfig) ? $this->sanitizeConfig($localConfig) : $this->getConfig();
     }
 
     public function sanitizeConfig(array $input): array
@@ -274,9 +200,6 @@ final class Plugin
             'blockedSearchFragments' => $this->sanitizeStringList($input['blockedSearchFragments'] ?? array()),
             'extraReplacements' => $this->sanitizeMap($input['extraReplacements'] ?? array()),
             'postCrawlCopyMap' => $this->sanitizeMap($input['postCrawlCopyMap'] ?? array()),
-            'defaultDeploymentProfile' => '',
-            'deploymentProfiles' => array(),
-            'scheduler' => $this->sanitizeSchedulerConfig(array()),
             'logDir' => $this->normalizeStorageRelativePath((string) ($input['logDir'] ?? 'logs'), 'logs'),
             'verbose' => !empty($input['verbose']),
             'logLevel' => $this->sanitizeLogLevel($input['logLevel'] ?? 'info'),
@@ -330,72 +253,6 @@ final class Plugin
         $name = sanitize_text_field((string) $value);
         $name = preg_replace('/[^a-zA-Z0-9._-]/', '', $name);
         return is_string($name) ? trim($name) : '';
-    }
-
-    private function sanitizeDeploymentProfilesConfig($value): array
-    {
-        if (!is_array($value)) {
-            return array();
-        }
-
-        $profiles = array();
-        foreach ($value as $rawName => $rawProfile) {
-            $name = $this->sanitizeDeploymentProfileName($rawName);
-            if ($name === '' || !is_array($rawProfile)) {
-                continue;
-            }
-
-            $profile = array();
-
-            $targetOrigin = $this->sanitizeOriginOrDot($rawProfile['targetOrigin'] ?? '');
-            if ($targetOrigin !== '') {
-                $profile['targetOrigin'] = $targetOrigin;
-            }
-
-            $extraReplacements = $this->sanitizeMap($rawProfile['extraReplacements'] ?? array());
-            if (!empty($extraReplacements)) {
-                $profile['extraReplacements'] = $extraReplacements;
-            }
-
-            if (isset($rawProfile['s3']) && is_array($rawProfile['s3'])) {
-                $s3 = array();
-                if (array_key_exists('bucket', $rawProfile['s3'])) {
-                    $s3['bucket'] = sanitize_text_field((string) ($rawProfile['s3']['bucket'] ?? ''));
-                }
-                if (array_key_exists('prefix', $rawProfile['s3'])) {
-                    $s3['prefix'] = $this->sanitizePathToken($rawProfile['s3']['prefix'] ?? '');
-                }
-                if (array_key_exists('region', $rawProfile['s3'])) {
-                    $s3['region'] = sanitize_text_field((string) ($rawProfile['s3']['region'] ?? ''));
-                }
-                if (array_key_exists('htmlCacheControl', $rawProfile['s3'])) {
-                    $s3['htmlCacheControl'] = sanitize_text_field((string) ($rawProfile['s3']['htmlCacheControl'] ?? ''));
-                }
-                if (array_key_exists('assetCacheControl', $rawProfile['s3'])) {
-                    $s3['assetCacheControl'] = sanitize_text_field((string) ($rawProfile['s3']['assetCacheControl'] ?? ''));
-                }
-                if (!empty($s3)) {
-                    $profile['s3'] = $s3;
-                }
-            }
-
-            if (isset($rawProfile['cloudFront']) && is_array($rawProfile['cloudFront'])) {
-                $cloudFront = array();
-                if (array_key_exists('distributionId', $rawProfile['cloudFront'])) {
-                    $cloudFront['distributionId'] = sanitize_text_field((string) ($rawProfile['cloudFront']['distributionId'] ?? ''));
-                }
-                if (array_key_exists('invalidationPaths', $rawProfile['cloudFront'])) {
-                    $cloudFront['invalidationPaths'] = $this->sanitizePathList($rawProfile['cloudFront']['invalidationPaths'] ?? array());
-                }
-                if (!empty($cloudFront)) {
-                    $profile['cloudFront'] = $cloudFront;
-                }
-            }
-
-            $profiles[$name] = $profile;
-        }
-
-        return $profiles;
     }
 
     private function resolveSiteAddressOrigin(): string
@@ -613,67 +470,6 @@ final class Plugin
             'sdk-upload-only',
         );
         return in_array($mode, $allowed, true) ? $mode : 'sdk-upload-delete';
-    }
-
-    private function sanitizeSchedulerConfig($value): array
-    {
-        $input = is_array($value) ? $value : array();
-        $defaultCrawlMode = $this->getPreferredDefaultCrawlMode();
-        $rawRules = isset($input['rules']) && is_array($input['rules']) ? $input['rules'] : array();
-        $rules = array();
-        foreach ($rawRules as $index => $rule) {
-            if (!is_array($rule)) {
-                continue;
-            }
-            $command = sanitize_text_field((string) ($rule['command'] ?? 'publish'));
-            $allowedCommands = array('publish', 'crawl', 'deploy', 'invalidate', 'retry-timeouts', 'url');
-            if (!in_array($command, $allowedCommands, true)) {
-                continue;
-            }
-            $intervalMinutes = max(1, absint($rule['intervalMinutes'] ?? 60));
-            $id = sanitize_text_field((string) ($rule['id'] ?? ($command . '-' . ($index + 1))));
-            if ($id === '') {
-                continue;
-            }
-            $crawlMode = sanitize_text_field((string) ($rule['crawlMode'] ?? $defaultCrawlMode));
-            if (!in_array($crawlMode, array('full', 'incremental'), true)) {
-                $crawlMode = $defaultCrawlMode;
-            }
-            if (!in_array($command, array('publish', 'crawl'), true)) {
-                $crawlMode = 'full';
-            }
-            $deploymentProfile = $this->sanitizeDeploymentProfileName($rule['deploymentProfile'] ?? '');
-            if (!in_array($command, array('publish', 'deploy', 'invalidate'), true)) {
-                $deploymentProfile = '';
-            }
-            $url = sanitize_text_field((string) ($rule['url'] ?? ''));
-            if ($command === 'url' && $url === '') {
-                continue;
-            }
-
-            $sanitizedRule = array(
-                'id' => $id,
-                'enabled' => !isset($rule['enabled']) || !empty($rule['enabled']),
-                'command' => $command,
-                'intervalMinutes' => $intervalMinutes,
-            );
-            if (in_array($command, array('publish', 'crawl'), true)) {
-                $sanitizedRule['crawlMode'] = $crawlMode;
-            }
-            if ($deploymentProfile !== '') {
-                $sanitizedRule['deploymentProfile'] = $deploymentProfile;
-            }
-            if ($url !== '') {
-                $sanitizedRule['url'] = $url;
-            }
-            $rules[] = $sanitizedRule;
-        }
-
-        return array(
-            'enabled' => !empty($input['enabled']),
-            'timezone' => sanitize_text_field((string) ($input['timezone'] ?? 'UTC')),
-            'rules' => $rules,
-        );
     }
 
     public function stripRuntimeOnlyConfigFromWpStorage(array $config): array
