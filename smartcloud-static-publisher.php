@@ -3242,15 +3242,15 @@ final class Plugin
         $playwrightPackage = $this->detectPlaywrightPackage((string) ($exporterPackage['configuredDir'] ?? ''));
         $playwrightChromium = $this->detectPlaywrightChromium((string) ($exporterPackage['configuredDir'] ?? ''));
 
-        $nodeAvailableByFilesystemOrExec = !empty($node['available']);
+        $nodeAvailableByFilesystem = !empty($node['available']);
         $nodeAvailableByHeartbeat = !empty($heartbeat['nodeAvailable']);
-        $nodeAvailable = $nodeAvailableByFilesystemOrExec || $nodeAvailableByHeartbeat;
+        $nodeAvailable = $nodeAvailableByFilesystem || $nodeAvailableByHeartbeat;
         $exporterAvailableByFilesystem = !empty($exporterPackage['installed']);
         $exporterAvailableByHeartbeat = !empty($heartbeat['fresh']) && !empty($heartbeat['exporterDir']);
         $exporterAvailable = $exporterAvailableByFilesystem || $exporterAvailableByHeartbeat;
         $playwrightPackageAvailable = !empty($playwrightPackage['installed']) || ($exporterAvailableByHeartbeat && !empty($playwrightChromium['installed']));
 
-        if (!$nodeAvailableByFilesystemOrExec && $nodeAvailableByHeartbeat) {
+        if (!$nodeAvailableByFilesystem && $nodeAvailableByHeartbeat) {
             $node['available'] = true;
             $node['checkMethod'] = 'queue-runner-heartbeat';
             if (empty($node['path']) && !empty($heartbeat['nodePath'])) {
@@ -3270,7 +3270,7 @@ final class Plugin
 
         $issues = array();
         if (!$nodeAvailable) {
-            $issues[] = 'Node.js binary was not detected from PHP process environment.';
+            $issues[] = 'Node.js binary was not detected by filesystem lookup or queue-runner heartbeat.';
         }
         if (!$exporterAvailable) {
             $issues[] = !empty($exporterPackage['configuredDir'])
@@ -3311,10 +3311,10 @@ final class Plugin
                 !empty($playwrightChromium['installed']),
             'issues' => $issues,
             'hints' => array(
-                'Detection is best-effort from PHP environment. Cron may use a different OS user and PATH.',
-                'Queue runner heartbeat is used as a fallback for Node runtime health when PHP-FPM PATH/HOME differs.',
+                'Detection is best-effort from filesystem paths visible to PHP plus the queue-runner heartbeat.',
+                'PHP does not execute shell commands for diagnostics; Node version details come from the queue runner heartbeat when available.',
                 'For decoupled installs, set External exporter directory to the installed @smart-cloud/publisher-exporter package root on the queue-runner host.',
-                'If cron or PHP-FPM user differs, install Node/Playwright for that user or set NODE_BIN, NVM_DIR and PLAYWRIGHT_BROWSERS_PATH in the relevant server/cron environment.',
+                'If cron or PHP-FPM user differs, set NODE_BIN, NVM_DIR and PLAYWRIGHT_BROWSERS_PATH in the relevant server/cron environment.',
             ),
         );
     }
@@ -3464,12 +3464,11 @@ final class Plugin
 
         foreach ($candidates as $candidate) {
             if ($candidate !== '' && is_file($candidate) && is_executable($candidate)) {
-                $versionInfo = $this->detectNodeVersion($candidate);
                 return array(
-                    'available' => !empty($versionInfo['executable']),
+                    'available' => true,
                     'path' => $candidate,
-                    'version' => (string) ($versionInfo['version'] ?? ''),
-                    'checkMethod' => (string) ($versionInfo['checkMethod'] ?? 'filesystem-only'),
+                    'version' => '',
+                    'checkMethod' => 'filesystem-only',
                 );
             }
         }
@@ -3480,49 +3479,6 @@ final class Plugin
             'version' => '',
             'checkMethod' => 'filesystem-only',
         );
-    }
-
-    private function detectNodeVersion(string $nodeBinary): array
-    {
-        if (!$this->canRunShellCommands()) {
-            return array(
-                'executable' => true,
-                'version' => '',
-                'checkMethod' => 'filesystem-only',
-            );
-        }
-
-        $command = escapeshellarg($nodeBinary) . ' --version 2>/dev/null';
-        $output = shell_exec($command);
-        $version = is_string($output) ? trim($output) : '';
-        if ($version !== '') {
-            return array(
-                'executable' => true,
-                'version' => sanitize_text_field($version),
-                'checkMethod' => 'node-version',
-            );
-        }
-
-        return array(
-            'executable' => false,
-            'version' => '',
-            'checkMethod' => 'node-version-failed',
-        );
-    }
-
-    private function canRunShellCommands(): bool
-    {
-        if (!function_exists('shell_exec')) {
-            return false;
-        }
-
-        $disabled = (string) ini_get('disable_functions');
-        if ($disabled === '') {
-            return true;
-        }
-
-        $disabledList = array_map('trim', explode(',', $disabled));
-        return !in_array('shell_exec', $disabledList, true);
     }
 
     private function resolveConfiguredExporterDir(): string

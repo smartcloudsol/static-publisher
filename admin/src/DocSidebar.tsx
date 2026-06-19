@@ -42,13 +42,13 @@ const pages = {
       <List size="sm" spacing="xs" withPadding mt="xs">
         <List.Item>
           {__(
-            "Install Node.js and Playwright Chromium under the same OS user that runs WordPress/PHP.",
+            "Install Node.js and Playwright Chromium under the OS user that runs the external queue-runner.",
             TEXT_DOMAIN,
           )}
         </List.Item>
         <List.Item>
           {__(
-            "Put queue-runner cron into the same user's crontab, otherwise diagnostics may be misleading.",
+            "Put queue-runner cron into that user's crontab. WordPress/PHP only writes queue files and reads heartbeat status.",
             TEXT_DOMAIN,
           )}
         </List.Item>

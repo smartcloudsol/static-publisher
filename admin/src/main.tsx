@@ -3098,7 +3098,7 @@ export default function Main({ store }: MainProps) {
                       </Text>
                       <Text size="sm">
                         {__(
-                          "Node.js, Playwright package, or Playwright Chromium browser was not detected from the server environment. Queue items can still be exported from your own shell.",
+                          "Node.js, Playwright package, or Playwright Chromium browser was not detected from filesystem paths or queue-runner heartbeat. Queue items can still be exported from your own shell.",
                           TEXT_DOMAIN,
                         )}
                       </Text>
@@ -3160,7 +3160,7 @@ export default function Main({ store }: MainProps) {
                       </Text>
                       <Text size="sm">
                         {__(
-                          "A recent queued run completed successfully, so cron execution appears healthy. The diagnostics warning is likely caused by PHP-FPM and cron using different OS users/PATH/HOME environments.",
+                          "A recent queued run completed successfully, so cron execution appears healthy. The diagnostics warning is likely caused by PHP and the queue runner seeing different filesystem paths or runtime environments.",
                           TEXT_DOMAIN,
                         )}
                       </Text>
@@ -3225,7 +3225,7 @@ export default function Main({ store }: MainProps) {
                             "external-exporter-dir",
                           )}
                           description={__(
-                            "Optional absolute path to the installed @smart-cloud/publisher-exporter package root on the queue-runner host. Used for server diagnostics and helper script setup.",
+                            "Optional absolute path to the installed @smart-cloud/publisher-exporter package root on the queue-runner host. Used for filesystem diagnostics only; PHP does not execute it.",
                             TEXT_DOMAIN,
                           )}
                           value={config.exporterDir}
@@ -3460,7 +3460,7 @@ export default function Main({ store }: MainProps) {
                           >
                             <Text size="sm">
                               {__(
-                                "Server diagnostics may differ from cron runtime (for example PHP-FPM vs cron user env). Settings stay editable; use your operational workflow accordingly.",
+                                "Server diagnostics may differ from cron runtime when PHP and the queue runner see different paths or environments. Settings stay editable; use your operational workflow accordingly.",
                                 TEXT_DOMAIN,
                               )}
                             </Text>
