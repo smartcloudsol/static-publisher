@@ -6,7 +6,7 @@
  * Requires at least: 6.2
  * Tested up to:      7.0
  * Requires PHP:      8.1
- * Version:           1.0.0
+ * Version:           1.0.1
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -1156,865 +1156,828 @@ final class Plugin
     }
 
     private function collectScopedRenderDependencyTargetsForArchive(array $resolved, array $listing, array $renderDependencyTargetSignatures): array
-        {
-            $targets = array();
-            $kind = sanitize_key((string) ($resolved['kind'] ?? ''));
+    {
+        $targets = array();
+        $kind = sanitize_key((string) ($resolved['kind'] ?? ''));
 
-            if ($kind === 'posts-archive' && isset($resolved['page']) && $resolved['page'] instanceof \WP_Post) {
-                $targets = array_merge(
-                    $targets,
-                    $this->collectScopedRenderDependencyTargetsForPost($resolved['page'], $renderDependencyTargetSignatures)
-                );
-            }
-
-            if ($kind === 'term-archive' && isset($resolved['term']) && $resolved['term'] instanceof \WP_Term) {
-                $targets = array_merge(
-                    $targets,
-                    $this->collectScopedRenderDependencyTargetsForText(
-                        (string) $resolved['term']->description,
-                        $renderDependencyTargetSignatures
-                    )
-                );
-            }
-
-            $postIds = isset($listing['postIds']) && is_array($listing['postIds'])
-                ? $listing['postIds']
-                : array();
-
-            foreach ($postIds as $postId) {
-                $listedPost = get_post((int) $postId);
-                if (!($listedPost instanceof \WP_Post)) {
-                    continue;
-                }
-
-                $targets = array_merge(
-                    $targets,
-                    $this->collectScopedRenderDependencyTargetsForPost($listedPost, $renderDependencyTargetSignatures)
-                );
-            }
-
-            return $this->normalizeScopedRenderDependencyTargets($targets, $renderDependencyTargetSignatures);
+        if ($kind === 'posts-archive' && isset($resolved['page']) && $resolved['page'] instanceof \WP_Post) {
+            $targets = array_merge(
+                $targets,
+                $this->collectScopedRenderDependencyTargetsForPost($resolved['page'], $renderDependencyTargetSignatures)
+            );
         }
 
-        private function collectScopedRenderDependencyTargetsForPost(\WP_Post $post, array $renderDependencyTargetSignatures): array
-        {
-            static $cache = array();
-
-            $cacheKey = (int) $post->ID . ':' . (string) ($post->post_modified_gmt ?: $post->post_modified);
-            if (isset($cache[$cacheKey]) && is_array($cache[$cacheKey])) {
-                return $cache[$cacheKey];
-            }
-
-            $targets = $this->collectScopedRenderDependencyTargetsForText(
-                (string) $post->post_content,
-                $renderDependencyTargetSignatures
+        if ($kind === 'term-archive' && isset($resolved['term']) && $resolved['term'] instanceof \WP_Term) {
+            $targets = array_merge(
+                $targets,
+                $this->collectScopedRenderDependencyTargetsForText(
+                    (string) $resolved['term']->description,
+                    $renderDependencyTargetSignatures
+                )
             );
+        }
 
-            $elementorData = get_post_meta($post->ID, '_elementor_data', true);
-            if (is_string($elementorData) && $elementorData !== '') {
-                $elementorTarget = $this->matchScopedRenderDependencyTargetBySlug('elementor', $renderDependencyTargetSignatures);
-                if ($elementorTarget !== null) {
-                    $targets[] = $elementorTarget;
-                }
+        $postIds = isset($listing['postIds']) && is_array($listing['postIds'])
+            ? $listing['postIds']
+            : array();
 
-                $elements = json_decode($elementorData, true);
-                if (is_array($elements)) {
-                    $this->collectScopedRenderDependencyTargetsForElementorElements(
-                        $elements,
-                        $renderDependencyTargetSignatures,
-                        $targets
-                    );
-                }
+        foreach ($postIds as $postId) {
+            $listedPost = get_post((int) $postId);
+            if (!($listedPost instanceof \WP_Post)) {
+                continue;
             }
 
-            $cache[$cacheKey] = $this->normalizeScopedRenderDependencyTargets($targets, $renderDependencyTargetSignatures);
+            $targets = array_merge(
+                $targets,
+                $this->collectScopedRenderDependencyTargetsForPost($listedPost, $renderDependencyTargetSignatures)
+            );
+        }
+
+        return $this->normalizeScopedRenderDependencyTargets($targets, $renderDependencyTargetSignatures);
+    }
+
+    private function collectScopedRenderDependencyTargetsForPost(\WP_Post $post, array $renderDependencyTargetSignatures): array
+    {
+        static $cache = array();
+
+        $cacheKey = (int) $post->ID . ':' . (string) ($post->post_modified_gmt ?: $post->post_modified);
+        if (isset($cache[$cacheKey]) && is_array($cache[$cacheKey])) {
             return $cache[$cacheKey];
         }
 
-        private function collectScopedRenderDependencyTargetsForText(string $content, array $renderDependencyTargetSignatures): array
-        {
-            if ($content === '') {
-                return array();
+        $targets = $this->collectScopedRenderDependencyTargetsForText(
+            (string) $post->post_content,
+            $renderDependencyTargetSignatures
+        );
+
+        $elementorData = get_post_meta($post->ID, '_elementor_data', true);
+        if (is_string($elementorData) && $elementorData !== '') {
+            $elementorTarget = $this->matchScopedRenderDependencyTargetBySlug('elementor', $renderDependencyTargetSignatures);
+            if ($elementorTarget !== null) {
+                $targets[] = $elementorTarget;
             }
 
-            $targets = array();
-            $this->collectScopedRenderDependencyTargetsForShortcodes($content, $renderDependencyTargetSignatures, $targets);
-
-            if (function_exists('has_blocks') && has_blocks($content)) {
-                $blocks = parse_blocks($content);
-                if (is_array($blocks)) {
-                    $this->collectScopedRenderDependencyTargetsForBlocks($blocks, $renderDependencyTargetSignatures, $targets);
-                }
+            $elements = json_decode($elementorData, true);
+            if (is_array($elements)) {
+                $this->collectScopedRenderDependencyTargetsForElementorElements(
+                    $elements,
+                    $renderDependencyTargetSignatures,
+                    $targets
+                );
             }
-
-            return $this->normalizeScopedRenderDependencyTargets($targets, $renderDependencyTargetSignatures);
         }
 
-        private function collectScopedRenderDependencyTargetsForBlocks(array $blocks, array $renderDependencyTargetSignatures, array &$targets): void
-        {
-            static $blockTypeCache = array();
+        $cache[$cacheKey] = $this->normalizeScopedRenderDependencyTargets($targets, $renderDependencyTargetSignatures);
+        return $cache[$cacheKey];
+    }
 
-            foreach ($blocks as $block) {
-                $blockName = isset($block['blockName']) ? trim((string) $block['blockName']) : '';
-                if ($blockName !== '') {
-                    $this->addScopedRenderDependencyTargetForBlockName($blockName, $renderDependencyTargetSignatures, $targets);
+    private function collectScopedRenderDependencyTargetsForText(string $content, array $renderDependencyTargetSignatures): array
+    {
+        if ($content === '') {
+            return array();
+        }
 
-                    if (isset($blockTypeCache[$blockName])) {
-                        $blockType = $blockTypeCache[$blockName];
-                    } else {
-                        $blockType = null;
-                        if (class_exists('\WP_Block_Type_Registry')) {
-                            $registry = \WP_Block_Type_Registry::get_instance();
-                            if (is_object($registry) && method_exists($registry, 'get_registered')) {
-                                $candidate = $registry->get_registered($blockName);
-                                if ($candidate instanceof \WP_Block_Type) {
-                                    $blockType = $candidate;
-                                }
-                            } elseif (is_object($registry) && method_exists($registry, 'get_all_registered')) {
-                                $allRegistered = $registry->get_all_registered();
-                                if (is_array($allRegistered) && isset($allRegistered[$blockName]) && $allRegistered[$blockName] instanceof \WP_Block_Type) {
-                                    $blockType = $allRegistered[$blockName];
-                                }
+        $targets = array();
+        $this->collectScopedRenderDependencyTargetsForShortcodes($content, $renderDependencyTargetSignatures, $targets);
+
+        if (function_exists('has_blocks') && has_blocks($content)) {
+            $blocks = parse_blocks($content);
+            if (is_array($blocks)) {
+                $this->collectScopedRenderDependencyTargetsForBlocks($blocks, $renderDependencyTargetSignatures, $targets);
+            }
+        }
+
+        return $this->normalizeScopedRenderDependencyTargets($targets, $renderDependencyTargetSignatures);
+    }
+
+    private function collectScopedRenderDependencyTargetsForBlocks(array $blocks, array $renderDependencyTargetSignatures, array &$targets): void
+    {
+        static $blockTypeCache = array();
+
+        foreach ($blocks as $block) {
+            $blockName = isset($block['blockName']) ? trim((string) $block['blockName']) : '';
+            if ($blockName !== '') {
+                $this->addScopedRenderDependencyTargetForBlockName($blockName, $renderDependencyTargetSignatures, $targets);
+
+                if (isset($blockTypeCache[$blockName])) {
+                    $blockType = $blockTypeCache[$blockName];
+                } else {
+                    $blockType = null;
+                    if (class_exists('\WP_Block_Type_Registry')) {
+                        $registry = \WP_Block_Type_Registry::get_instance();
+                        if (is_object($registry) && method_exists($registry, 'get_registered')) {
+                            $candidate = $registry->get_registered($blockName);
+                            if ($candidate instanceof \WP_Block_Type) {
+                                $blockType = $candidate;
+                            }
+                        } elseif (is_object($registry) && method_exists($registry, 'get_all_registered')) {
+                            $allRegistered = $registry->get_all_registered();
+                            if (is_array($allRegistered) && isset($allRegistered[$blockName]) && $allRegistered[$blockName] instanceof \WP_Block_Type) {
+                                $blockType = $allRegistered[$blockName];
                             }
                         }
-
-                        $blockTypeCache[$blockName] = $blockType;
                     }
 
-                    if ($blockType instanceof \WP_Block_Type) {
-                        $renderCallback = $blockType->render_callback ?? null;
-                        if ($renderCallback !== null) {
-                            $this->addScopedRenderDependencyTargetsForCallback(
-                                $renderCallback,
-                                $renderDependencyTargetSignatures,
-                                $targets
-                            );
-                        }
+                    $blockTypeCache[$blockName] = $blockType;
+                }
 
-                        $blockFile = isset($blockType->file) && is_string($blockType->file)
-                            ? $blockType->file
-                            : '';
-                        if ($blockFile !== '') {
-                            $this->addScopedRenderDependencyTargetForFilePath(
-                                $blockFile,
-                                $renderDependencyTargetSignatures,
-                                $targets
-                            );
-                        }
+                if ($blockType instanceof \WP_Block_Type) {
+                    $renderCallback = $blockType->render_callback ?? null;
+                    if ($renderCallback !== null) {
+                        $this->addScopedRenderDependencyTargetsForCallback(
+                            $renderCallback,
+                            $renderDependencyTargetSignatures,
+                            $targets
+                        );
                     }
-                }
 
-                $innerHtml = (string) ($block['innerHTML'] ?? '');
-                if ($innerHtml !== '') {
-                    $this->collectScopedRenderDependencyTargetsForShortcodes(
-                        $innerHtml,
-                        $renderDependencyTargetSignatures,
-                        $targets
-                    );
-                }
-
-                if (!empty($block['innerBlocks']) && is_array($block['innerBlocks'])) {
-                    $this->collectScopedRenderDependencyTargetsForBlocks(
-                        $block['innerBlocks'],
-                        $renderDependencyTargetSignatures,
-                        $targets
-                    );
-                }
-            }
-        }
-
-        private function addScopedRenderDependencyTargetForBlockName(string $blockName, array $renderDependencyTargetSignatures, array &$targets): void
-        {
-            $parts = explode('/', $blockName, 2);
-            $namespace = strtolower(trim((string) ($parts[0] ?? '')));
-            if ($namespace === '' || $namespace === 'core') {
-                return;
-            }
-
-            $target = $this->matchScopedRenderDependencyTargetBySlug($namespace, $renderDependencyTargetSignatures);
-            if ($target !== null) {
-                $targets[] = $target;
-            }
-        }
-
-        private function collectScopedRenderDependencyTargetsForShortcodes(string $content, array $renderDependencyTargetSignatures, array &$targets): void
-        {
-            if ($content === '' || !function_exists('get_shortcode_regex')) {
-                return;
-            }
-
-            global $shortcode_tags;
-            if (!is_array($shortcode_tags) || empty($shortcode_tags)) {
-                return;
-            }
-
-            $pattern = get_shortcode_regex();
-            if (!preg_match_all('/' . $pattern . '/s', $content, $matches, PREG_SET_ORDER)) {
-                return;
-            }
-
-            foreach ($matches as $match) {
-                $shortcodeTag = isset($match[2]) ? sanitize_key((string) $match[2]) : '';
-                if ($shortcodeTag === '') {
-                    continue;
-                }
-
-                $callback = $shortcode_tags[$shortcodeTag] ?? null;
-                if ($callback !== null) {
-                    $this->addScopedRenderDependencyTargetsForCallback(
-                        $callback,
-                        $renderDependencyTargetSignatures,
-                        $targets
-                    );
-                }
-
-                $target = $this->matchScopedRenderDependencyTargetBySlug($shortcodeTag, $renderDependencyTargetSignatures);
-                if ($target !== null) {
-                    $targets[] = $target;
-                }
-            }
-        }
-
-        private function collectScopedRenderDependencyTargetsForElementorElements(array $elements, array $renderDependencyTargetSignatures, array &$targets): void
-        {
-            foreach ($elements as $element) {
-                $widgetType = sanitize_key((string) ($element['widgetType'] ?? $element['elType'] ?? ''));
-                if ($widgetType !== '') {
-                    $target = $this->resolveElementorWidgetRenderDependencyTarget($widgetType, $renderDependencyTargetSignatures);
-                    if ($target !== null) {
-                        $targets[] = $target;
-                    }
-                }
-
-                $settings = isset($element['settings']) && is_array($element['settings'])
-                    ? $element['settings']
-                    : array();
-
-                if (in_array($widgetType, array('text-editor', 'html', 'shortcode'), true)) {
-                    $content = (string) ($settings['editor'] ?? $settings['html'] ?? $settings['shortcode'] ?? '');
-                    if ($content !== '') {
-                        $this->collectScopedRenderDependencyTargetsForShortcodes(
-                            $content,
+                    $blockFile = isset($blockType->file) && is_string($blockType->file)
+                        ? $blockType->file
+                        : '';
+                    if ($blockFile !== '') {
+                        $this->addScopedRenderDependencyTargetForFilePath(
+                            $blockFile,
                             $renderDependencyTargetSignatures,
                             $targets
                         );
                     }
                 }
+            }
 
-                if (!empty($element['elements']) && is_array($element['elements'])) {
-                    $this->collectScopedRenderDependencyTargetsForElementorElements(
-                        $element['elements'],
+            $innerHtml = (string) ($block['innerHTML'] ?? '');
+            if ($innerHtml !== '') {
+                $this->collectScopedRenderDependencyTargetsForShortcodes(
+                    $innerHtml,
+                    $renderDependencyTargetSignatures,
+                    $targets
+                );
+            }
+
+            if (!empty($block['innerBlocks']) && is_array($block['innerBlocks'])) {
+                $this->collectScopedRenderDependencyTargetsForBlocks(
+                    $block['innerBlocks'],
+                    $renderDependencyTargetSignatures,
+                    $targets
+                );
+            }
+        }
+    }
+
+    private function addScopedRenderDependencyTargetForBlockName(string $blockName, array $renderDependencyTargetSignatures, array &$targets): void
+    {
+        $parts = explode('/', $blockName, 2);
+        $namespace = strtolower(trim((string) ($parts[0] ?? '')));
+        if ($namespace === '' || $namespace === 'core') {
+            return;
+        }
+
+        $target = $this->matchScopedRenderDependencyTargetBySlug($namespace, $renderDependencyTargetSignatures);
+        if ($target !== null) {
+            $targets[] = $target;
+        }
+    }
+
+    private function collectScopedRenderDependencyTargetsForShortcodes(string $content, array $renderDependencyTargetSignatures, array &$targets): void
+    {
+        if ($content === '' || !function_exists('get_shortcode_regex')) {
+            return;
+        }
+
+        global $shortcode_tags;
+        if (!is_array($shortcode_tags) || empty($shortcode_tags)) {
+            return;
+        }
+
+        $pattern = get_shortcode_regex();
+        if (!preg_match_all('/' . $pattern . '/s', $content, $matches, PREG_SET_ORDER)) {
+            return;
+        }
+
+        foreach ($matches as $match) {
+            $shortcodeTag = isset($match[2]) ? sanitize_key((string) $match[2]) : '';
+            if ($shortcodeTag === '') {
+                continue;
+            }
+
+            $callback = $shortcode_tags[$shortcodeTag] ?? null;
+            if ($callback !== null) {
+                $this->addScopedRenderDependencyTargetsForCallback(
+                    $callback,
+                    $renderDependencyTargetSignatures,
+                    $targets
+                );
+            }
+
+            $target = $this->matchScopedRenderDependencyTargetBySlug($shortcodeTag, $renderDependencyTargetSignatures);
+            if ($target !== null) {
+                $targets[] = $target;
+            }
+        }
+    }
+
+    private function collectScopedRenderDependencyTargetsForElementorElements(array $elements, array $renderDependencyTargetSignatures, array &$targets): void
+    {
+        foreach ($elements as $element) {
+            $widgetType = sanitize_key((string) ($element['widgetType'] ?? $element['elType'] ?? ''));
+            if ($widgetType !== '') {
+                $target = $this->resolveElementorWidgetRenderDependencyTarget($widgetType, $renderDependencyTargetSignatures);
+                if ($target !== null) {
+                    $targets[] = $target;
+                }
+            }
+
+            $settings = isset($element['settings']) && is_array($element['settings'])
+                ? $element['settings']
+                : array();
+
+            if (in_array($widgetType, array('text-editor', 'html', 'shortcode'), true)) {
+                $content = (string) ($settings['editor'] ?? $settings['html'] ?? $settings['shortcode'] ?? '');
+                if ($content !== '') {
+                    $this->collectScopedRenderDependencyTargetsForShortcodes(
+                        $content,
                         $renderDependencyTargetSignatures,
                         $targets
                     );
                 }
             }
+
+            if (!empty($element['elements']) && is_array($element['elements'])) {
+                $this->collectScopedRenderDependencyTargetsForElementorElements(
+                    $element['elements'],
+                    $renderDependencyTargetSignatures,
+                    $targets
+                );
+            }
+        }
+    }
+
+    private function resolveElementorWidgetRenderDependencyTarget(string $widgetType, array $renderDependencyTargetSignatures): ?string
+    {
+        static $cache = array();
+
+        $normalizedWidgetType = sanitize_key($widgetType);
+        if ($normalizedWidgetType === '') {
+            return null;
         }
 
-        private function resolveElementorWidgetRenderDependencyTarget(string $widgetType, array $renderDependencyTargetSignatures): ?string
-        {
-            static $cache = array();
+        if (array_key_exists($normalizedWidgetType, $cache)) {
+            return $cache[$normalizedWidgetType];
+        }
 
-            $normalizedWidgetType = sanitize_key($widgetType);
-            if ($normalizedWidgetType === '') {
-                return null;
-            }
+        $fallback = $this->matchScopedRenderDependencyTargetBySlug($normalizedWidgetType, $renderDependencyTargetSignatures);
 
-            if (array_key_exists($normalizedWidgetType, $cache)) {
-                return $cache[$normalizedWidgetType];
-            }
-
-            $fallback = $this->matchScopedRenderDependencyTargetBySlug($normalizedWidgetType, $renderDependencyTargetSignatures);
-
-            if (!class_exists('\Elementor\Plugin')) {
-                $cache[$normalizedWidgetType] = $fallback;
-                return $cache[$normalizedWidgetType];
-            }
-
-            try {
-                $elementorInstance = \Elementor\Plugin::$instance ?? null;
-            } catch (\Throwable $error) {
-                unset($error);
-                $cache[$normalizedWidgetType] = $fallback;
-                return $cache[$normalizedWidgetType];
-            }
-
-            if (!is_object($elementorInstance) || !isset($elementorInstance->widgets_manager) || !is_object($elementorInstance->widgets_manager)) {
-                $cache[$normalizedWidgetType] = $fallback;
-                return $cache[$normalizedWidgetType];
-            }
-
-            $widgetsManager = $elementorInstance->widgets_manager;
-            if (!method_exists($widgetsManager, 'get_widget_types')) {
-                $cache[$normalizedWidgetType] = $fallback;
-                return $cache[$normalizedWidgetType];
-            }
-
-            $widgetTypes = $widgetsManager->get_widget_types();
-            if (!is_array($widgetTypes)) {
-                $cache[$normalizedWidgetType] = $fallback;
-                return $cache[$normalizedWidgetType];
-            }
-
-            $widget = $widgetTypes[$widgetType] ?? $widgetTypes[$normalizedWidgetType] ?? null;
-            if (!is_object($widget)) {
-                $cache[$normalizedWidgetType] = $fallback;
-                return $cache[$normalizedWidgetType];
-            }
-
-            try {
-                $reflection = new \ReflectionClass($widget);
-                $fileName = $reflection->getFileName();
-                if (is_string($fileName) && $fileName !== '') {
-                    $resolvedTarget = $this->resolveScopedRenderDependencyTargetForFilePath(
-                        $fileName,
-                        $renderDependencyTargetSignatures
-                    );
-                    if ($resolvedTarget !== null) {
-                        $cache[$normalizedWidgetType] = $resolvedTarget;
-                        return $cache[$normalizedWidgetType];
-                    }
-                }
-            } catch (\ReflectionException $error) {
-                unset($error);
-            }
-
+        if (!class_exists('\Elementor\Plugin')) {
             $cache[$normalizedWidgetType] = $fallback;
             return $cache[$normalizedWidgetType];
         }
 
-        private function addScopedRenderDependencyTargetsForCallback($callback, array $renderDependencyTargetSignatures, array &$targets): void
-        {
-            try {
-                if (is_string($callback) && $callback !== '') {
-                    if (strpos($callback, '::') !== false) {
-                        list($className, $methodName) = explode('::', $callback, 2);
-                        $reflection = new \ReflectionMethod($className, $methodName);
-                    } else {
-                        $reflection = new \ReflectionFunction($callback);
-                    }
-                } elseif ($callback instanceof \Closure) {
-                    $reflection = new \ReflectionFunction($callback);
-                } elseif (is_array($callback) && count($callback) === 2 && isset($callback[0], $callback[1])) {
-                    $reflection = new \ReflectionMethod($callback[0], (string) $callback[1]);
-                } elseif (is_object($callback) && method_exists($callback, '__invoke')) {
-                    $reflection = new \ReflectionMethod($callback, '__invoke');
-                } else {
-                    return;
-                }
-            } catch (\ReflectionException $error) {
-                unset($error);
-                return;
-            }
+        try {
+            $elementorInstance = \Elementor\Plugin::$instance ?? null;
+        } catch (\Throwable $error) {
+            unset($error);
+            $cache[$normalizedWidgetType] = $fallback;
+            return $cache[$normalizedWidgetType];
+        }
 
+        if (!is_object($elementorInstance) || !isset($elementorInstance->widgets_manager) || !is_object($elementorInstance->widgets_manager)) {
+            $cache[$normalizedWidgetType] = $fallback;
+            return $cache[$normalizedWidgetType];
+        }
+
+        $widgetsManager = $elementorInstance->widgets_manager;
+        if (!method_exists($widgetsManager, 'get_widget_types')) {
+            $cache[$normalizedWidgetType] = $fallback;
+            return $cache[$normalizedWidgetType];
+        }
+
+        $widgetTypes = $widgetsManager->get_widget_types();
+        if (!is_array($widgetTypes)) {
+            $cache[$normalizedWidgetType] = $fallback;
+            return $cache[$normalizedWidgetType];
+        }
+
+        $widget = $widgetTypes[$widgetType] ?? $widgetTypes[$normalizedWidgetType] ?? null;
+        if (!is_object($widget)) {
+            $cache[$normalizedWidgetType] = $fallback;
+            return $cache[$normalizedWidgetType];
+        }
+
+        try {
+            $reflection = new \ReflectionClass($widget);
             $fileName = $reflection->getFileName();
-            if (!is_string($fileName) || $fileName === '') {
+            if (is_string($fileName) && $fileName !== '') {
+                $resolvedTarget = $this->resolveScopedRenderDependencyTargetForFilePath(
+                    $fileName,
+                    $renderDependencyTargetSignatures
+                );
+                if ($resolvedTarget !== null) {
+                    $cache[$normalizedWidgetType] = $resolvedTarget;
+                    return $cache[$normalizedWidgetType];
+                }
+            }
+        } catch (\ReflectionException $error) {
+            unset($error);
+        }
+
+        $cache[$normalizedWidgetType] = $fallback;
+        return $cache[$normalizedWidgetType];
+    }
+
+    private function addScopedRenderDependencyTargetsForCallback($callback, array $renderDependencyTargetSignatures, array &$targets): void
+    {
+        try {
+            if (is_string($callback) && $callback !== '') {
+                if (strpos($callback, '::') !== false) {
+                    list($className, $methodName) = explode('::', $callback, 2);
+                    $reflection = new \ReflectionMethod($className, $methodName);
+                } else {
+                    $reflection = new \ReflectionFunction($callback);
+                }
+            } elseif ($callback instanceof \Closure) {
+                $reflection = new \ReflectionFunction($callback);
+            } elseif (is_array($callback) && count($callback) === 2 && isset($callback[0], $callback[1])) {
+                $reflection = new \ReflectionMethod($callback[0], (string) $callback[1]);
+            } elseif (is_object($callback) && method_exists($callback, '__invoke')) {
+                $reflection = new \ReflectionMethod($callback, '__invoke');
+            } else {
                 return;
             }
-
-            $this->addScopedRenderDependencyTargetForFilePath($fileName, $renderDependencyTargetSignatures, $targets);
+        } catch (\ReflectionException $error) {
+            unset($error);
+            return;
         }
 
-        private function addScopedRenderDependencyTargetForFilePath(string $filePath, array $renderDependencyTargetSignatures, array &$targets): void
-        {
-            $target = $this->resolveScopedRenderDependencyTargetForFilePath($filePath, $renderDependencyTargetSignatures);
-            if ($target !== null) {
-                $targets[] = $target;
-            }
+        $fileName = $reflection->getFileName();
+        if (!is_string($fileName) || $fileName === '') {
+            return;
         }
 
-        private function resolveScopedRenderDependencyTargetForFilePath(string $filePath, array $renderDependencyTargetSignatures): ?string
-        {
-            $normalizedFilePath = wp_normalize_path($filePath);
-            if ($normalizedFilePath === '') {
-                return null;
-            }
+        $this->addScopedRenderDependencyTargetForFilePath($fileName, $renderDependencyTargetSignatures, $targets);
+    }
 
-            $bestLabel = null;
-            $bestLength = -1;
-
-            foreach ($renderDependencyTargetSignatures as $label => $targetSignature) {
-                if (!is_array($targetSignature) || !$this->isScopedRenderDependencyTargetLabel((string) $label)) {
-                    continue;
-                }
-
-                $targetPath = wp_normalize_path((string) ($targetSignature['path'] ?? ''));
-                if ($targetPath === '') {
-                    continue;
-                }
-
-                $targetDirectory = is_dir($targetPath) ? rtrim($targetPath, '/') . '/' : '';
-                $matches = $normalizedFilePath === $targetPath
-                    || ($targetDirectory !== '' && strpos($normalizedFilePath, $targetDirectory) === 0);
-
-                if ($matches && strlen($targetPath) > $bestLength) {
-                    $bestLabel = (string) $label;
-                    $bestLength = strlen($targetPath);
-                }
-            }
-
-            return $bestLabel;
+    private function addScopedRenderDependencyTargetForFilePath(string $filePath, array $renderDependencyTargetSignatures, array &$targets): void
+    {
+        $target = $this->resolveScopedRenderDependencyTargetForFilePath($filePath, $renderDependencyTargetSignatures);
+        if ($target !== null) {
+            $targets[] = $target;
         }
+    }
 
-        private function matchScopedRenderDependencyTargetBySlug(string $slug, array $renderDependencyTargetSignatures): ?string
-        {
-            $normalizedSlug = strtolower(str_replace('_', '-', trim($slug)));
-            if ($normalizedSlug === '') {
-                return null;
-            }
-
-            foreach ($renderDependencyTargetSignatures as $label => $targetSignature) {
-                if (!is_array($targetSignature) || !$this->isScopedRenderDependencyTargetLabel((string) $label)) {
-                    continue;
-                }
-
-                $targetSlug = $this->scopedRenderDependencyTargetSlug((string) $label);
-                if ($targetSlug === '') {
-                    continue;
-                }
-
-                if ($targetSlug === $normalizedSlug) {
-                    return (string) $label;
-                }
-            }
-
-            foreach ($renderDependencyTargetSignatures as $label => $targetSignature) {
-                if (!is_array($targetSignature) || !$this->isScopedRenderDependencyTargetLabel((string) $label)) {
-                    continue;
-                }
-
-                $targetSlug = $this->scopedRenderDependencyTargetSlug((string) $label);
-                if ($targetSlug === '') {
-                    continue;
-                }
-
-                if (strpos($normalizedSlug, $targetSlug . '-') === 0 || strpos($normalizedSlug, $targetSlug . '_') === 0) {
-                    return (string) $label;
-                }
-            }
-
+    private function resolveScopedRenderDependencyTargetForFilePath(string $filePath, array $renderDependencyTargetSignatures): ?string
+    {
+        $normalizedFilePath = wp_normalize_path($filePath);
+        if ($normalizedFilePath === '') {
             return null;
         }
 
-        private function scopedRenderDependencyTargetSlug(string $label): string
-        {
-            if (strpos($label, 'plugin-dir:') === 0) {
-                return strtolower(str_replace('_', '-', substr($label, strlen('plugin-dir:'))));
+        $bestLabel = null;
+        $bestLength = -1;
+
+        foreach ($renderDependencyTargetSignatures as $label => $targetSignature) {
+            if (!is_array($targetSignature) || !$this->isScopedRenderDependencyTargetLabel((string) $label)) {
+                continue;
             }
 
-            if (strpos($label, 'mu-plugin-dir:') === 0) {
-                return strtolower(str_replace('_', '-', substr($label, strlen('mu-plugin-dir:'))));
+            $targetPath = wp_normalize_path((string) ($targetSignature['path'] ?? ''));
+            if ($targetPath === '') {
+                continue;
             }
 
-            if (strpos($label, 'plugin-file:') === 0) {
-                return strtolower(str_replace('_', '-', pathinfo(substr($label, strlen('plugin-file:')), PATHINFO_FILENAME)));
-            }
+            $targetDirectory = is_dir($targetPath) ? rtrim($targetPath, '/') . '/' : '';
+            $matches = $normalizedFilePath === $targetPath
+                || ($targetDirectory !== '' && strpos($normalizedFilePath, $targetDirectory) === 0);
 
-            if (strpos($label, 'mu-plugin-file:') === 0) {
-                return strtolower(str_replace('_', '-', pathinfo(substr($label, strlen('mu-plugin-file:')), PATHINFO_FILENAME)));
+            if ($matches && strlen($targetPath) > $bestLength) {
+                $bestLabel = (string) $label;
+                $bestLength = strlen($targetPath);
             }
-
-            return '';
         }
 
-        private function isScopedRenderDependencyTargetLabel(string $label): bool
-        {
-            return strpos($label, 'plugin-dir:') === 0
-                || strpos($label, 'plugin-file:') === 0
-                || strpos($label, 'mu-plugin-dir:') === 0
-                || strpos($label, 'mu-plugin-file:') === 0;
+        return $bestLabel;
+    }
+
+    private function matchScopedRenderDependencyTargetBySlug(string $slug, array $renderDependencyTargetSignatures): ?string
+    {
+        $normalizedSlug = strtolower(str_replace('_', '-', trim($slug)));
+        if ($normalizedSlug === '') {
+            return null;
         }
 
-        private function normalizeScopedRenderDependencyTargets(array $targets, array $renderDependencyTargetSignatures): array
-        {
-            $normalizedTargets = array();
-
-            foreach ($targets as $target) {
-                $label = sanitize_text_field((string) $target);
-                if ($label === '' || !$this->isScopedRenderDependencyTargetLabel($label) || !isset($renderDependencyTargetSignatures[$label])) {
-                    continue;
-                }
-
-                $normalizedTargets[$label] = true;
+        foreach ($renderDependencyTargetSignatures as $label => $targetSignature) {
+            if (!is_array($targetSignature) || !$this->isScopedRenderDependencyTargetLabel((string) $label)) {
+                continue;
             }
 
-            $labels = array_keys($normalizedTargets);
-            sort($labels, SORT_STRING);
-            return $labels;
+            $targetSlug = $this->scopedRenderDependencyTargetSlug((string) $label);
+            if ($targetSlug === '') {
+                continue;
+            }
+
+            if ($targetSlug === $normalizedSlug) {
+                return (string) $label;
+            }
         }
 
-        private function buildScopedRenderDependencySignature(array $targets, array $renderDependencyTargetSignatures): array
-        {
-            $labels = $this->normalizeScopedRenderDependencyTargets($targets, $renderDependencyTargetSignatures);
-            $signatureTargets = array();
-
-            foreach ($labels as $label) {
-                $targetSignature = $renderDependencyTargetSignatures[$label] ?? null;
-                if (!is_array($targetSignature)) {
-                    continue;
-                }
-
-                $signatureTargets[] = array(
-                    'label' => $label,
-                    'hash' => sanitize_text_field((string) ($targetSignature['hash'] ?? '')),
-                );
+        foreach ($renderDependencyTargetSignatures as $label => $targetSignature) {
+            if (!is_array($targetSignature) || !$this->isScopedRenderDependencyTargetLabel((string) $label)) {
+                continue;
             }
 
-            return array(
-                'hash' => hash('sha256', (string) wp_json_encode($signatureTargets)),
-                'targets' => $signatureTargets,
+            $targetSlug = $this->scopedRenderDependencyTargetSlug((string) $label);
+            if ($targetSlug === '') {
+                continue;
+            }
+
+            if (strpos($normalizedSlug, $targetSlug . '-') === 0 || strpos($normalizedSlug, $targetSlug . '_') === 0) {
+                return (string) $label;
+            }
+        }
+
+        return null;
+    }
+
+    private function scopedRenderDependencyTargetSlug(string $label): string
+    {
+        if (strpos($label, 'plugin-dir:') === 0) {
+            return strtolower(str_replace('_', '-', substr($label, strlen('plugin-dir:'))));
+        }
+
+        if (strpos($label, 'mu-plugin-dir:') === 0) {
+            return strtolower(str_replace('_', '-', substr($label, strlen('mu-plugin-dir:'))));
+        }
+
+        if (strpos($label, 'plugin-file:') === 0) {
+            return strtolower(str_replace('_', '-', pathinfo(substr($label, strlen('plugin-file:')), PATHINFO_FILENAME)));
+        }
+
+        if (strpos($label, 'mu-plugin-file:') === 0) {
+            return strtolower(str_replace('_', '-', pathinfo(substr($label, strlen('mu-plugin-file:')), PATHINFO_FILENAME)));
+        }
+
+        return '';
+    }
+
+    private function isScopedRenderDependencyTargetLabel(string $label): bool
+    {
+        return strpos($label, 'plugin-dir:') === 0
+            || strpos($label, 'plugin-file:') === 0
+            || strpos($label, 'mu-plugin-dir:') === 0
+            || strpos($label, 'mu-plugin-file:') === 0;
+    }
+
+    private function normalizeScopedRenderDependencyTargets(array $targets, array $renderDependencyTargetSignatures): array
+    {
+        $normalizedTargets = array();
+
+        foreach ($targets as $target) {
+            $label = sanitize_text_field((string) $target);
+            if ($label === '' || !$this->isScopedRenderDependencyTargetLabel($label) || !isset($renderDependencyTargetSignatures[$label])) {
+                continue;
+            }
+
+            $normalizedTargets[$label] = true;
+        }
+
+        $labels = array_keys($normalizedTargets);
+        sort($labels, SORT_STRING);
+        return $labels;
+    }
+
+    private function buildScopedRenderDependencySignature(array $targets, array $renderDependencyTargetSignatures): array
+    {
+        $labels = $this->normalizeScopedRenderDependencyTargets($targets, $renderDependencyTargetSignatures);
+        $signatureTargets = array();
+
+        foreach ($labels as $label) {
+            $targetSignature = $renderDependencyTargetSignatures[$label] ?? null;
+            if (!is_array($targetSignature)) {
+                continue;
+            }
+
+            $signatureTargets[] = array(
+                'label' => $label,
+                'hash' => sanitize_text_field((string) ($targetSignature['hash'] ?? '')),
             );
         }
 
-        private function emptySharedLayoutDependencyData(): array
-        {
-            return array(
-                'targets' => array(),
-                'signature' => array(
-                    'hash' => hash('sha256', '[]'),
-                    'items' => array(),
-                ),
-            );
+        return array(
+            'hash' => hash('sha256', (string) wp_json_encode($signatureTargets)),
+            'targets' => $signatureTargets,
+        );
+    }
+
+    private function emptySharedLayoutDependencyData(): array
+    {
+        return array(
+            'targets' => array(),
+            'signature' => array(
+                'hash' => hash('sha256', '[]'),
+                'items' => array(),
+            ),
+        );
+    }
+
+    private function collectSharedLayoutDependencyDataForUrl(string $url, array $renderDependencyTargetSignatures, ?\WP_Query $query = null, string $forcedTemplateType = ''): array
+    {
+        static $cache = array();
+
+        $normalizedUrl = $this->normalizePublicUrlForChangeToken($url);
+        if ($normalizedUrl === null) {
+            return $this->emptySharedLayoutDependencyData();
         }
 
-        private function collectSharedLayoutDependencyDataForUrl(string $url, array $renderDependencyTargetSignatures, ?\WP_Query $query = null, string $forcedTemplateType = ''): array
-        {
-            static $cache = array();
+        $cacheKey = $normalizedUrl . '|' . sanitize_key($forcedTemplateType);
+        if ($query === null && isset($cache[$cacheKey]) && is_array($cache[$cacheKey])) {
+            return $cache[$cacheKey];
+        }
 
-            $normalizedUrl = $this->normalizePublicUrlForChangeToken($url);
-            if ($normalizedUrl === null) {
-                return $this->emptySharedLayoutDependencyData();
-            }
-
-            $cacheKey = $normalizedUrl . '|' . sanitize_key($forcedTemplateType);
-            if ($query === null && isset($cache[$cacheKey]) && is_array($cache[$cacheKey])) {
-                return $cache[$cacheKey];
-            }
-
-            if (!current_theme_supports('block-templates') || !function_exists('get_query_template')) {
-                $result = $this->emptySharedLayoutDependencyData();
-                if ($query === null) {
-                    $cache[$cacheKey] = $result;
-                }
-                return $result;
-            }
-
-            $resolvedQuery = $query instanceof \WP_Query
-                ? $query
-                : $this->buildTrackedRouteQueryForUrl($normalizedUrl);
-            if (!($resolvedQuery instanceof \WP_Query) && $forcedTemplateType !== '') {
-                $resolvedQuery = new \WP_Query();
-                if ($forcedTemplateType === '404') {
-                    $resolvedQuery->is_404 = true;
-                }
-            }
-
-            if (!($resolvedQuery instanceof \WP_Query)) {
-                $result = $this->emptySharedLayoutDependencyData();
-                if ($query === null) {
-                    $cache[$cacheKey] = $result;
-                }
-                return $result;
-            }
-
-            // phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- WordPress core exposes the resolved block-template state through these globals.
-            global $wp_query, $wp_the_query, $post, $_wp_current_template_id, $_wp_current_template_content;
-
-            $originalWpQuery = $wp_query ?? null;
-            $originalWpTheQuery = $wp_the_query ?? null;
-            $originalPost = $post ?? null;
-            $originalTemplateId = $_wp_current_template_id ?? null;
-            $originalTemplateContent = $_wp_current_template_content ?? null;
-
-            $templatePath = '';
-            $templateId = '';
-            $templateContent = '';
-
-            try {
-                $wp_query = $resolvedQuery;
-                $wp_the_query = $resolvedQuery;
-                $queriedObject = $resolvedQuery->get_queried_object();
-                if ($queriedObject instanceof \WP_Post) {
-                    $post = $queriedObject;
-                }
-
-                $_wp_current_template_id = null;
-                $_wp_current_template_content = null;
-
-                $templatePath = $this->resolveQueryTemplatePathForCurrentQuery($forcedTemplateType);
-                $templateId = sanitize_text_field((string) ($_wp_current_template_id ?? ''));
-                $templateContent = is_string($_wp_current_template_content ?? null)
-                    ? (string) $_wp_current_template_content
-                    : '';
-            } finally {
-                $wp_query = $originalWpQuery;
-                $wp_the_query = $originalWpTheQuery;
-                $post = $originalPost;
-                $_wp_current_template_id = $originalTemplateId;
-                $_wp_current_template_content = $originalTemplateContent;
-                // phpcs:enable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound
-            }
-
-            if ($templateId === '' && $templateContent === '') {
-                $result = $this->emptySharedLayoutDependencyData();
-                if ($query === null) {
-                    $cache[$cacheKey] = $result;
-                }
-                return $result;
-            }
-
-            $layoutItems = array();
-            $targets = $this->collectScopedRenderDependencyTargetsForText(
-                $templateContent,
-                $renderDependencyTargetSignatures
-            );
-
-            $templateObject = function_exists('get_block_template') && $templateId !== ''
-                ? get_block_template($templateId, 'wp_template')
-                : null;
-            $layoutItems[] = $this->buildSharedLayoutDependencyItemFromTemplate(
-                'template',
-                $templateId,
-                is_object($templateObject) ? $templateObject : null,
-                $templateContent,
-                $templatePath
-            );
-
-            $visitedTemplateRefs = array();
-            if ($templateId !== '') {
-                $visitedTemplateRefs['wp_template:' . $templateId] = true;
-            }
-            $visitedPostRefs = array();
-
-            if ($templateContent !== '' && function_exists('has_blocks') && has_blocks($templateContent)) {
-                $blocks = parse_blocks($templateContent);
-                if (is_array($blocks)) {
-                    $this->collectSharedLayoutDependencyReferencesFromBlocks(
-                        $blocks,
-                        $renderDependencyTargetSignatures,
-                        $layoutItems,
-                        $targets,
-                        $visitedTemplateRefs,
-                        $visitedPostRefs
-                    );
-                }
-            }
-
-            $result = array(
-                'targets' => $this->normalizeScopedRenderDependencyTargets($targets, $renderDependencyTargetSignatures),
-                'signature' => array(
-                    'hash' => hash('sha256', (string) wp_json_encode($layoutItems)),
-                    'items' => $layoutItems,
-                ),
-            );
-
+        if (!current_theme_supports('block-templates') || !function_exists('get_query_template')) {
+            $result = $this->emptySharedLayoutDependencyData();
             if ($query === null) {
                 $cache[$cacheKey] = $result;
             }
-
             return $result;
         }
 
-        private function resolveQueryTemplatePathForCurrentQuery(string $forcedTemplateType = ''): string
-        {
-            if ($forcedTemplateType === '404' && function_exists('get_404_template')) {
-                return (string) get_404_template();
+        $resolvedQuery = $query instanceof \WP_Query
+            ? $query
+            : $this->buildTrackedRouteQueryForUrl($normalizedUrl);
+        if (!($resolvedQuery instanceof \WP_Query) && $forcedTemplateType !== '') {
+            $resolvedQuery = new \WP_Query();
+            if ($forcedTemplateType === '404') {
+                $resolvedQuery->is_404 = true;
             }
-
-            if (function_exists('is_404') && is_404() && function_exists('get_404_template')) {
-                return (string) get_404_template();
-            }
-
-            if (function_exists('is_front_page') && is_front_page() && function_exists('get_front_page_template')) {
-                return (string) get_front_page_template();
-            }
-
-            if (function_exists('is_home') && is_home() && function_exists('get_home_template')) {
-                return (string) get_home_template();
-            }
-
-            if (function_exists('is_post_type_archive') && is_post_type_archive() && function_exists('get_post_type_archive_template')) {
-                return (string) get_post_type_archive_template();
-            }
-
-            if (function_exists('is_tax') && is_tax() && function_exists('get_taxonomy_template')) {
-                return (string) get_taxonomy_template();
-            }
-
-            if (function_exists('is_category') && is_category() && function_exists('get_category_template')) {
-                return (string) get_category_template();
-            }
-
-            if (function_exists('is_tag') && is_tag() && function_exists('get_tag_template')) {
-                return (string) get_tag_template();
-            }
-
-            if (function_exists('is_author') && is_author() && function_exists('get_author_template')) {
-                return (string) get_author_template();
-            }
-
-            if (function_exists('is_date') && is_date() && function_exists('get_date_template')) {
-                return (string) get_date_template();
-            }
-
-            if (function_exists('is_page') && is_page() && function_exists('get_page_template')) {
-                return (string) get_page_template();
-            }
-
-            if (function_exists('is_single') && is_single() && function_exists('get_single_template')) {
-                return (string) get_single_template();
-            }
-
-            if (function_exists('is_singular') && is_singular() && function_exists('get_singular_template')) {
-                return (string) get_singular_template();
-            }
-
-            if (function_exists('is_search') && is_search() && function_exists('get_search_template')) {
-                return (string) get_search_template();
-            }
-
-            if (function_exists('is_archive') && is_archive() && function_exists('get_archive_template')) {
-                return (string) get_archive_template();
-            }
-
-            if (function_exists('get_index_template')) {
-                return (string) get_index_template();
-            }
-
-            return '';
         }
 
-        private function buildSharedLayoutDependencyItemFromTemplate(string $kind, string $fallbackId, $template, string $fallbackContent, string $templatePath = ''): array
-        {
-            $templateId = is_object($template) && isset($template->id)
-                ? sanitize_text_field((string) $template->id)
-                : sanitize_text_field($fallbackId);
-            $content = is_object($template) && isset($template->content)
-                ? (string) $template->content
-                : $fallbackContent;
-
-            $item = array(
-                'kind' => $kind,
-                'id' => $templateId,
-                'slug' => is_object($template) && isset($template->slug)
-                    ? sanitize_text_field((string) $template->slug)
-                    : '',
-                'source' => is_object($template) && isset($template->source)
-                    ? sanitize_key((string) $template->source)
-                    : '',
-                'contentHash' => hash('sha256', $content),
-            );
-
-            if ($templatePath !== '') {
-                $item['templatePath'] = wp_normalize_path($templatePath);
+        if (!($resolvedQuery instanceof \WP_Query)) {
+            $result = $this->emptySharedLayoutDependencyData();
+            if ($query === null) {
+                $cache[$cacheKey] = $result;
             }
-
-            if (is_object($template) && isset($template->has_theme_file)) {
-                $item['hasThemeFile'] = (bool) $template->has_theme_file;
-            }
-
-            $wpId = is_object($template) && isset($template->wp_id) ? absint($template->wp_id) : 0;
-            if ($wpId > 0) {
-                $item['wpId'] = $wpId;
-                $templatePost = get_post($wpId);
-                if ($templatePost instanceof \WP_Post) {
-                    $item['modifiedGmt'] = (string) ($templatePost->post_modified_gmt ?: $templatePost->post_modified);
-                }
-            }
-
-            return $item;
+            return $result;
         }
 
-        private function buildSharedLayoutDependencyItemFromPost(string $kind, \WP_Post $post): array
-        {
-            return array(
-                'kind' => $kind,
-                'postId' => (int) $post->ID,
-                'postType' => (string) $post->post_type,
-                'slug' => (string) $post->post_name,
-                'modifiedGmt' => (string) ($post->post_modified_gmt ?: $post->post_modified),
-                'contentHash' => hash('sha256', (string) $post->post_content),
-            );
+        // phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- WordPress core exposes the resolved block-template state through these globals.
+        global $wp_query, $wp_the_query, $post, $_wp_current_template_id, $_wp_current_template_content;
+
+        $originalWpQuery = $wp_query ?? null;
+        $originalWpTheQuery = $wp_the_query ?? null;
+        $originalPost = $post ?? null;
+        $originalTemplateId = $_wp_current_template_id ?? null;
+        $originalTemplateContent = $_wp_current_template_content ?? null;
+
+        $templatePath = '';
+        $templateId = '';
+        $templateContent = '';
+
+        try {
+            $wp_query = $resolvedQuery;
+            $wp_the_query = $resolvedQuery;
+            $queriedObject = $resolvedQuery->get_queried_object();
+            if ($queriedObject instanceof \WP_Post) {
+                $post = $queriedObject;
+            }
+
+            $_wp_current_template_id = null;
+            $_wp_current_template_content = null;
+
+            $templatePath = $this->resolveQueryTemplatePathForCurrentQuery($forcedTemplateType);
+            $templateId = sanitize_text_field((string) ($_wp_current_template_id ?? ''));
+            $templateContent = is_string($_wp_current_template_content ?? null)
+                ? (string) $_wp_current_template_content
+                : '';
+        } finally {
+            $wp_query = $originalWpQuery;
+            $wp_the_query = $originalWpTheQuery;
+            $post = $originalPost;
+            $_wp_current_template_id = $originalTemplateId;
+            $_wp_current_template_content = $originalTemplateContent;
+            // phpcs:enable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound
         }
 
-        private function collectSharedLayoutDependencyReferencesFromBlocks(array $blocks, array $renderDependencyTargetSignatures, array &$layoutItems, array &$targets, array &$visitedTemplateRefs, array &$visitedPostRefs): void
-        {
-            static $blockTemplateCache = array();
+        if ($templateId === '' && $templateContent === '') {
+            $result = $this->emptySharedLayoutDependencyData();
+            if ($query === null) {
+                $cache[$cacheKey] = $result;
+            }
+            return $result;
+        }
 
-            foreach ($blocks as $block) {
-                $blockName = isset($block['blockName']) ? trim((string) $block['blockName']) : '';
-                $attrs = isset($block['attrs']) && is_array($block['attrs']) ? $block['attrs'] : array();
+        $layoutItems = array();
+        $targets = $this->collectScopedRenderDependencyTargetsForText(
+            $templateContent,
+            $renderDependencyTargetSignatures
+        );
 
-                if ($blockName === 'core/template-part' && function_exists('get_block_template')) {
-                    $slug = sanitize_title((string) ($attrs['slug'] ?? ''));
-                    $theme = sanitize_text_field((string) ($attrs['theme'] ?? get_stylesheet()));
-                    if ($slug !== '' && $theme !== '') {
-                        $templatePartId = $theme . '//' . $slug;
-                        $visitedKey = 'wp_template_part:' . $templatePartId;
-                        if (!isset($visitedTemplateRefs[$visitedKey])) {
-                            $visitedTemplateRefs[$visitedKey] = true;
+        $templateObject = function_exists('get_block_template') && $templateId !== ''
+            ? get_block_template($templateId, 'wp_template')
+            : null;
+        $layoutItems[] = $this->buildSharedLayoutDependencyItemFromTemplate(
+            'template',
+            $templateId,
+            is_object($templateObject) ? $templateObject : null,
+            $templateContent,
+            $templatePath
+        );
 
-                            if (isset($blockTemplateCache[$visitedKey])) {
-                                $templatePart = $blockTemplateCache[$visitedKey];
-                            } else {
-                                $templatePart = get_block_template($templatePartId, 'wp_template_part');
-                                $blockTemplateCache[$visitedKey] = $templatePart ?: false;
-                            }
+        $visitedTemplateRefs = array();
+        if ($templateId !== '') {
+            $visitedTemplateRefs['wp_template:' . $templateId] = true;
+        }
+        $visitedPostRefs = array();
 
-                            if (is_object($templatePart)) {
-                                $templatePartContent = isset($templatePart->content) ? (string) $templatePart->content : '';
-                                $layoutItems[] = $this->buildSharedLayoutDependencyItemFromTemplate(
-                                    'template-part',
-                                    $templatePartId,
-                                    $templatePart,
-                                    $templatePartContent
-                                );
-                                $targets = array_merge(
-                                    $targets,
-                                    $this->collectScopedRenderDependencyTargetsForText($templatePartContent, $renderDependencyTargetSignatures)
-                                );
-                                if ($templatePartContent !== '' && function_exists('has_blocks') && has_blocks($templatePartContent)) {
-                                    $templatePartBlocks = parse_blocks($templatePartContent);
-                                    if (is_array($templatePartBlocks)) {
-                                        $this->collectSharedLayoutDependencyReferencesFromBlocks(
-                                            $templatePartBlocks,
-                                            $renderDependencyTargetSignatures,
-                                            $layoutItems,
-                                            $targets,
-                                            $visitedTemplateRefs,
-                                            $visitedPostRefs
-                                        );
-                                    }
-                                }
-                            }
+        if ($templateContent !== '' && function_exists('has_blocks') && has_blocks($templateContent)) {
+            $blocks = parse_blocks($templateContent);
+            if (is_array($blocks)) {
+                $this->collectSharedLayoutDependencyReferencesFromBlocks(
+                    $blocks,
+                    $renderDependencyTargetSignatures,
+                    $layoutItems,
+                    $targets,
+                    $visitedTemplateRefs,
+                    $visitedPostRefs
+                );
+            }
+        }
+
+        $result = array(
+            'targets' => $this->normalizeScopedRenderDependencyTargets($targets, $renderDependencyTargetSignatures),
+            'signature' => array(
+                'hash' => hash('sha256', (string) wp_json_encode($layoutItems)),
+                'items' => $layoutItems,
+            ),
+        );
+
+        if ($query === null) {
+            $cache[$cacheKey] = $result;
+        }
+
+        return $result;
+    }
+
+    private function resolveQueryTemplatePathForCurrentQuery(string $forcedTemplateType = ''): string
+    {
+        if ($forcedTemplateType === '404' && function_exists('get_404_template')) {
+            return (string) get_404_template();
+        }
+
+        if (function_exists('is_404') && is_404() && function_exists('get_404_template')) {
+            return (string) get_404_template();
+        }
+
+        if (function_exists('is_front_page') && is_front_page() && function_exists('get_front_page_template')) {
+            return (string) get_front_page_template();
+        }
+
+        if (function_exists('is_home') && is_home() && function_exists('get_home_template')) {
+            return (string) get_home_template();
+        }
+
+        if (function_exists('is_post_type_archive') && is_post_type_archive() && function_exists('get_post_type_archive_template')) {
+            return (string) get_post_type_archive_template();
+        }
+
+        if (function_exists('is_tax') && is_tax() && function_exists('get_taxonomy_template')) {
+            return (string) get_taxonomy_template();
+        }
+
+        if (function_exists('is_category') && is_category() && function_exists('get_category_template')) {
+            return (string) get_category_template();
+        }
+
+        if (function_exists('is_tag') && is_tag() && function_exists('get_tag_template')) {
+            return (string) get_tag_template();
+        }
+
+        if (function_exists('is_author') && is_author() && function_exists('get_author_template')) {
+            return (string) get_author_template();
+        }
+
+        if (function_exists('is_date') && is_date() && function_exists('get_date_template')) {
+            return (string) get_date_template();
+        }
+
+        if (function_exists('is_page') && is_page() && function_exists('get_page_template')) {
+            return (string) get_page_template();
+        }
+
+        if (function_exists('is_single') && is_single() && function_exists('get_single_template')) {
+            return (string) get_single_template();
+        }
+
+        if (function_exists('is_singular') && is_singular() && function_exists('get_singular_template')) {
+            return (string) get_singular_template();
+        }
+
+        if (function_exists('is_search') && is_search() && function_exists('get_search_template')) {
+            return (string) get_search_template();
+        }
+
+        if (function_exists('is_archive') && is_archive() && function_exists('get_archive_template')) {
+            return (string) get_archive_template();
+        }
+
+        if (function_exists('get_index_template')) {
+            return (string) get_index_template();
+        }
+
+        return '';
+    }
+
+    private function buildSharedLayoutDependencyItemFromTemplate(string $kind, string $fallbackId, $template, string $fallbackContent, string $templatePath = ''): array
+    {
+        $templateId = is_object($template) && isset($template->id)
+            ? sanitize_text_field((string) $template->id)
+            : sanitize_text_field($fallbackId);
+        $content = is_object($template) && isset($template->content)
+            ? (string) $template->content
+            : $fallbackContent;
+
+        $item = array(
+            'kind' => $kind,
+            'id' => $templateId,
+            'slug' => is_object($template) && isset($template->slug)
+                ? sanitize_text_field((string) $template->slug)
+                : '',
+            'source' => is_object($template) && isset($template->source)
+                ? sanitize_key((string) $template->source)
+                : '',
+            'contentHash' => hash('sha256', $content),
+        );
+
+        if ($templatePath !== '') {
+            $item['templatePath'] = wp_normalize_path($templatePath);
+        }
+
+        if (is_object($template) && isset($template->has_theme_file)) {
+            $item['hasThemeFile'] = (bool) $template->has_theme_file;
+        }
+
+        $wpId = is_object($template) && isset($template->wp_id) ? absint($template->wp_id) : 0;
+        if ($wpId > 0) {
+            $item['wpId'] = $wpId;
+            $templatePost = get_post($wpId);
+            if ($templatePost instanceof \WP_Post) {
+                $item['modifiedGmt'] = (string) ($templatePost->post_modified_gmt ?: $templatePost->post_modified);
+            }
+        }
+
+        return $item;
+    }
+
+    private function buildSharedLayoutDependencyItemFromPost(string $kind, \WP_Post $post): array
+    {
+        return array(
+            'kind' => $kind,
+            'postId' => (int) $post->ID,
+            'postType' => (string) $post->post_type,
+            'slug' => (string) $post->post_name,
+            'modifiedGmt' => (string) ($post->post_modified_gmt ?: $post->post_modified),
+            'contentHash' => hash('sha256', (string) $post->post_content),
+        );
+    }
+
+    private function collectSharedLayoutDependencyReferencesFromBlocks(array $blocks, array $renderDependencyTargetSignatures, array &$layoutItems, array &$targets, array &$visitedTemplateRefs, array &$visitedPostRefs): void
+    {
+        static $blockTemplateCache = array();
+
+        foreach ($blocks as $block) {
+            $blockName = isset($block['blockName']) ? trim((string) $block['blockName']) : '';
+            $attrs = isset($block['attrs']) && is_array($block['attrs']) ? $block['attrs'] : array();
+
+            if ($blockName === 'core/template-part' && function_exists('get_block_template')) {
+                $slug = sanitize_title((string) ($attrs['slug'] ?? ''));
+                $theme = sanitize_text_field((string) ($attrs['theme'] ?? get_stylesheet()));
+                if ($slug !== '' && $theme !== '') {
+                    $templatePartId = $theme . '//' . $slug;
+                    $visitedKey = 'wp_template_part:' . $templatePartId;
+                    if (!isset($visitedTemplateRefs[$visitedKey])) {
+                        $visitedTemplateRefs[$visitedKey] = true;
+
+                        if (isset($blockTemplateCache[$visitedKey])) {
+                            $templatePart = $blockTemplateCache[$visitedKey];
+                        } else {
+                            $templatePart = get_block_template($templatePartId, 'wp_template_part');
+                            $blockTemplateCache[$visitedKey] = $templatePart ?: false;
                         }
-                    }
-                }
 
-                if (($blockName === 'core/block' || $blockName === 'core/navigation') && !empty($attrs['ref'])) {
-                    $referencedPostId = absint($attrs['ref']);
-                    $visitedKey = $blockName . ':' . $referencedPostId;
-                    if ($referencedPostId > 0 && !isset($visitedPostRefs[$visitedKey])) {
-                        $visitedPostRefs[$visitedKey] = true;
-                        $referencedPost = get_post($referencedPostId);
-                        if ($referencedPost instanceof \WP_Post) {
-                            $layoutItems[] = $this->buildSharedLayoutDependencyItemFromPost(
-                                $blockName === 'core/block' ? 'reusable-block' : 'navigation-post',
-                                $referencedPost
+                        if (is_object($templatePart)) {
+                            $templatePartContent = isset($templatePart->content) ? (string) $templatePart->content : '';
+                            $layoutItems[] = $this->buildSharedLayoutDependencyItemFromTemplate(
+                                'template-part',
+                                $templatePartId,
+                                $templatePart,
+                                $templatePartContent
                             );
                             $targets = array_merge(
                                 $targets,
-                                $this->collectScopedRenderDependencyTargetsForText(
-                                    (string) $referencedPost->post_content,
-                                    $renderDependencyTargetSignatures
-                                )
+                                $this->collectScopedRenderDependencyTargetsForText($templatePartContent, $renderDependencyTargetSignatures)
                             );
-
-                            if (function_exists('has_blocks') && has_blocks($referencedPost->post_content)) {
-                                $referencedBlocks = parse_blocks((string) $referencedPost->post_content);
-                                if (is_array($referencedBlocks)) {
+                            if ($templatePartContent !== '' && function_exists('has_blocks') && has_blocks($templatePartContent)) {
+                                $templatePartBlocks = parse_blocks($templatePartContent);
+                                if (is_array($templatePartBlocks)) {
                                     $this->collectSharedLayoutDependencyReferencesFromBlocks(
-                                        $referencedBlocks,
+                                        $templatePartBlocks,
                                         $renderDependencyTargetSignatures,
                                         $layoutItems,
                                         $targets,
@@ -2026,19 +1989,56 @@ final class Plugin
                         }
                     }
                 }
+            }
 
-                if (!empty($block['innerBlocks']) && is_array($block['innerBlocks'])) {
-                    $this->collectSharedLayoutDependencyReferencesFromBlocks(
-                        $block['innerBlocks'],
-                        $renderDependencyTargetSignatures,
-                        $layoutItems,
-                        $targets,
-                        $visitedTemplateRefs,
-                        $visitedPostRefs
-                    );
+            if (($blockName === 'core/block' || $blockName === 'core/navigation') && !empty($attrs['ref'])) {
+                $referencedPostId = absint($attrs['ref']);
+                $visitedKey = $blockName . ':' . $referencedPostId;
+                if ($referencedPostId > 0 && !isset($visitedPostRefs[$visitedKey])) {
+                    $visitedPostRefs[$visitedKey] = true;
+                    $referencedPost = get_post($referencedPostId);
+                    if ($referencedPost instanceof \WP_Post) {
+                        $layoutItems[] = $this->buildSharedLayoutDependencyItemFromPost(
+                            $blockName === 'core/block' ? 'reusable-block' : 'navigation-post',
+                            $referencedPost
+                        );
+                        $targets = array_merge(
+                            $targets,
+                            $this->collectScopedRenderDependencyTargetsForText(
+                                (string) $referencedPost->post_content,
+                                $renderDependencyTargetSignatures
+                            )
+                        );
+
+                        if (function_exists('has_blocks') && has_blocks($referencedPost->post_content)) {
+                            $referencedBlocks = parse_blocks((string) $referencedPost->post_content);
+                            if (is_array($referencedBlocks)) {
+                                $this->collectSharedLayoutDependencyReferencesFromBlocks(
+                                    $referencedBlocks,
+                                    $renderDependencyTargetSignatures,
+                                    $layoutItems,
+                                    $targets,
+                                    $visitedTemplateRefs,
+                                    $visitedPostRefs
+                                );
+                            }
+                        }
+                    }
                 }
             }
+
+            if (!empty($block['innerBlocks']) && is_array($block['innerBlocks'])) {
+                $this->collectSharedLayoutDependencyReferencesFromBlocks(
+                    $block['innerBlocks'],
+                    $renderDependencyTargetSignatures,
+                    $layoutItems,
+                    $targets,
+                    $visitedTemplateRefs,
+                    $visitedPostRefs
+                );
+            }
         }
+    }
 
     private function buildArchivePostQuerySignature(array $queryArgs): array
     {
