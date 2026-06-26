@@ -273,7 +273,6 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
             'queueItems' => array_map(array($this->plugin, 'sanitizeJobForState'), $queue),
             'availableLogs' => $this->plugin->listLogFiles(),
             'stopRequest' => $this->plugin->getActiveStopRequest($currentRun),
-            'serverDiagnostics' => $this->plugin->getServerDiagnostics(),
         );
 
         return new WP_REST_Response($state, 200);

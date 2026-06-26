@@ -129,47 +129,6 @@ type QueueItem = {
   usesTempAwsCreds?: boolean;
 };
 
-type ServerDiagnostics = {
-  checkedAt: string;
-  phpUser: string;
-  node: {
-    available: boolean;
-    path: string;
-  };
-  exporter?: {
-    configuredDir?: string;
-    packageInstalled?: boolean;
-    packagePath?: string;
-    packageName?: string;
-    packageVersion?: string;
-    cliPath?: string;
-  };
-  playwright: {
-    packageInstalled: boolean;
-    packagePath: string;
-    chromiumInstalled: boolean;
-    chromiumPath: string;
-    browsersPath: string;
-  };
-  readyForServerQueueExecution: boolean;
-  queueRunnerHeartbeat?: {
-    available?: boolean;
-    checkedAt?: string;
-    status?: string;
-    exporterDir?: string;
-    currentJobId?: string;
-    currentJobCommand?: string;
-    currentStep?: string;
-    message?: string;
-    stopRequestedAt?: string;
-    stopRequestedByLogin?: string;
-    stopRequestedMode?: string;
-    lastStoppedStep?: string;
-  };
-  issues: string[];
-  hints: string[];
-};
-
 type PublisherConfig = {
   sourceOrigin: string;
   targetOrigin: string;
@@ -300,7 +259,6 @@ type StateResponse = {
     targetJobCommand?: string;
     mode?: string;
   } | null;
-  serverDiagnostics: ServerDiagnostics;
 };
 
 type LogFileResponse = {
@@ -2367,20 +2325,9 @@ export default function Main({ store }: MainProps) {
     closeDirBrowse();
   };
 
-  const diagnostics = state?.serverDiagnostics ?? null;
-  const serverQueueReady = diagnostics?.readyForServerQueueExecution ?? true;
-  const hasRecentSuccessfulRun = (() => {
-    if (state?.lastRun?.status !== "success") return false;
-    const ts = Date.parse(state.lastRun.createdAt || "");
-    if (!Number.isFinite(ts)) return false;
-    // eslint-disable-next-line react-hooks/purity
-    const age = Date.now() - ts;
-    return age >= 0 && age <= 12 * 60 * 60 * 1000;
-  })();
-  const showPrereqWarning = !serverQueueReady && !hasRecentSuccessfulRun;
-  const showPrereqInfo = !serverQueueReady && hasRecentSuccessfulRun;
-  const heartbeat = diagnostics?.queueRunnerHeartbeat;
-  const currentStep = (heartbeat?.currentStep || "").trim();
+  const currentStep = String(
+    state?.currentProgress?.currentStep || state?.currentCrawlEvent?.currentStep || "",
+  ).trim();
   const stableCurrentProgress = buildStableCurrentProgress(
     currentStep,
     state?.currentProgress,
@@ -2404,19 +2351,13 @@ export default function Main({ store }: MainProps) {
     !!stopRequest?.targetJobId &&
     stopRequest.targetJobId === state.currentRun.id;
   const lastRunStopped = state?.lastRun?.status === "stopped";
-  const lastStopMode = String(
-    state?.lastRun?.stopMode || heartbeat?.stopRequestedMode || "",
-  ).trim();
-  const lastStoppedStep = String(
-    state?.lastRun?.stoppedStep || heartbeat?.lastStoppedStep || "",
-  ).trim();
+  const lastStopMode = String(state?.lastRun?.stopMode || "").trim();
+  const lastStoppedStep = String(state?.lastRun?.stoppedStep || "").trim();
   const lastStopRequestedAt = String(
-    state?.lastRun?.stopRequestedAt || heartbeat?.stopRequestedAt || "",
+    state?.lastRun?.stopRequestedAt || "",
   ).trim();
   const lastStopRequestedByLogin = String(
-    state?.lastRun?.stopRequestedByLogin ||
-      heartbeat?.stopRequestedByLogin ||
-      "",
+    state?.lastRun?.stopRequestedByLogin || "",
   ).trim();
   const currentRunBadgeColor =
     currentRunStatus === "running"
@@ -3083,97 +3024,6 @@ export default function Main({ store }: MainProps) {
                     </Stack>
                   </Card>
                 )}
-                {mainSection === "jobs" && showPrereqWarning && (
-                  <Alert
-                    color="yellow"
-                    variant="light"
-                    icon={<IconAlertCircle size={18} />}
-                  >
-                    <Stack gap={6}>
-                      <Text fw={600}>
-                        {__(
-                          "Server-side queue execution prerequisites are incomplete.",
-                          TEXT_DOMAIN,
-                        )}
-                      </Text>
-                      <Text size="sm">
-                        {__(
-                          "Node.js, Playwright package, or Playwright Chromium browser was not detected from filesystem paths or queue-runner heartbeat. Queue items can still be exported from your own shell.",
-                          TEXT_DOMAIN,
-                        )}
-                      </Text>
-                      {!!diagnostics?.issues?.length && (
-                        <Text
-                          size="sm"
-                          ff="monospace"
-                          c="dimmed"
-                          style={{ whiteSpace: "pre-wrap" }}
-                        >
-                          {diagnostics.issues.join("\n")}
-                        </Text>
-                      )}
-                      <Text size="sm">
-                        {__(
-                          "Use Download config next to queued jobs, install prerequisites locally, run crawl, then deploy or invalidate with the exporter CLI.",
-                          TEXT_DOMAIN,
-                        )}
-                      </Text>
-                      <Text
-                        size="sm"
-                        ff="monospace"
-                        style={{ whiteSpace: "pre-wrap" }}
-                      >
-                        PUBLISHER_CONFIG=./publisher.config.json npx
-                        @smart-cloud/publisher-exporter crawl
-                        {"\n"}
-                        PUBLISHER_CONFIG=./publisher.config.json npx
-                        @smart-cloud/publisher-exporter deploy
-                        {"\n"}
-                        PUBLISHER_CONFIG=./publisher.config.json npx
-                        @smart-cloud/publisher-exporter invalidate
-                      </Text>
-                      <Text size="sm">
-                        <a
-                          href="https://www.npmjs.com/package/@smart-cloud/publisher-exporter"
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {__("Exporter CLI package", TEXT_DOMAIN)}
-                        </a>
-                      </Text>
-                    </Stack>
-                  </Alert>
-                )}
-
-                {mainSection === "jobs" && showPrereqInfo && (
-                  <Alert
-                    color="blue"
-                    variant="light"
-                    icon={<IconInfoCircle size={18} />}
-                  >
-                    <Stack gap={6}>
-                      <Text fw={600}>
-                        {__(
-                          "Server diagnostics and cron runtime look different.",
-                          TEXT_DOMAIN,
-                        )}
-                      </Text>
-                      <Text size="sm">
-                        {__(
-                          "A recent queued run completed successfully, so cron execution appears healthy. The diagnostics warning is likely caused by PHP and the queue runner seeing different filesystem paths or runtime environments.",
-                          TEXT_DOMAIN,
-                        )}
-                      </Text>
-                      {!!state?.lastRun?.createdAt && (
-                        <Text size="sm" c="dimmed">
-                          {__("Last successful run:", TEXT_DOMAIN)}{" "}
-                          <Code>{state.lastRun.createdAt}</Code>
-                        </Text>
-                      )}
-                    </Stack>
-                  </Alert>
-                )}
-
                 <Stack gap="md">
                   {mainSection === "configuration" && (
                     <Card withBorder shadow="sm" radius="md" padding="lg">
@@ -3225,7 +3075,7 @@ export default function Main({ store }: MainProps) {
                             "external-exporter-dir",
                           )}
                           description={__(
-                            "Optional absolute path to the installed @smart-cloud/publisher-exporter package root on the queue-runner host. Used for filesystem diagnostics only; PHP does not execute it.",
+                            "Optional absolute path to the installed @smart-cloud/publisher-exporter package root on the queue-runner host.",
                             TEXT_DOMAIN,
                           )}
                           value={config.exporterDir}
@@ -3452,20 +3302,6 @@ export default function Main({ store }: MainProps) {
                         </Button>
                       </Group>
                       <Stack>
-                        {showPrereqWarning && (
-                          <Alert
-                            color="gray"
-                            variant="light"
-                            icon={<IconInfoCircle size={16} />}
-                          >
-                            <Text size="sm">
-                              {__(
-                                "Server diagnostics may differ from cron runtime when PHP and the queue runner see different paths or environments. Settings stay editable; use your operational workflow accordingly.",
-                                TEXT_DOMAIN,
-                              )}
-                            </Text>
-                          </Alert>
-                        )}
                         <Text size="sm" c="dimmed">
                           {__(
                             "Set your main deploy target here. Additional deployment targets live under PRO Features > Extra Deployment Targets and are saved remotely.",

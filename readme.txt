@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.2
 Tested up to: 7.0
 Requires PHP: 8.1
-Stable tag: 1.0.1
+Stable tag: 1.0.2
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -501,6 +501,9 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.0.2 =
+* Admin: Removed obsolete server-side Node.js and Playwright diagnostics from the job queue screen.
+
 = 1.0.1 =
 * Compatibility: Refined paid-feature handling in preparation for upcoming WP Suite Agency subscriptions.
 
@@ -512,6 +515,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.2 =
+Small admin cleanup. No configuration changes are required.
 
 = 1.0.1 =
 Recommended compatibility update in preparation for upcoming WP Suite Agency subscriptions. No configuration changes are required.
