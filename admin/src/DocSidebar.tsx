@@ -1,6 +1,7 @@
 import { Code, Drawer, List, Stack, Text, Title } from "@mantine/core";
 import { useEffect, useRef } from "react";
 import { __ } from "@wordpress/i18n";
+import "./doc-sidebar.css";
 
 const TEXT_DOMAIN = "smartcloud-static-publisher";
 
@@ -802,6 +803,7 @@ export default function DocSidebar({
 
   return (
     <Drawer
+      classNames={{ content: "wpsuite-doc-sidebar" }}
       opened={opened}
       onClose={close}
       title={__("Static Publisher Documentation", TEXT_DOMAIN)}

@@ -3,7 +3,7 @@
  * Plugin Name:       SmartCloud Static Publisher
  * Plugin URI:        https://wpsuite.io/static-publisher/
  * Description:       Static export admin for WP Suite Static Publisher. Generates runtime config, queues export jobs, and shows exporter logs.
- * Requires at least: 6.2
+ * Requires at least: 6.9
  * Tested up to:      7.0
  * Requires PHP:      8.1
  * Version:           1.0.2
@@ -649,6 +649,11 @@ final class Plugin
 
     private function buildChangeTokenItem(string $url, array $globalSignature, array $renderDependencyTargetSignatures): array
     {
+        $fileBackedItem = $this->buildFileBackedChangeTokenItem($url);
+        if (is_array($fileBackedItem)) {
+            return $fileBackedItem;
+        }
+
         $generated404Item = $this->buildGenerated404ChangeTokenItem($url, $globalSignature, $renderDependencyTargetSignatures);
         if (is_array($generated404Item)) {
             return $generated404Item;
@@ -730,6 +735,67 @@ final class Plugin
         return $this->buildUnsupportedChangeTokenItem(
             $url,
             'URL did not resolve to a tracked WordPress route.'
+        );
+    }
+
+    /**
+     * Allow themes and plugins to fingerprint public routes backed by files
+     * instead of WordPress posts.
+     *
+     * Providers return a stable fingerprint for the complete rendered
+     * response dependency set. The fingerprint stays private: this method
+     * hashes it with the normalized URL before returning the public token.
+     *
+     * @param string $url Normalized same-origin public URL.
+     * @return array<string, mixed>|null
+     */
+    private function buildFileBackedChangeTokenItem(string $url): ?array
+    {
+        /**
+         * Filters change-token data for a public file-backed route.
+         *
+         * Return null when the provider does not own the URL. A supported
+         * provider returns:
+         * - fingerprint: stable hash/string covering the rendered response;
+         * - source: optional machine-readable token source;
+         * - identity: optional non-sensitive route/file identity.
+         *
+         * @param array<string, mixed>|null $data File-backed token data.
+         * @param string                    $url  Normalized public URL.
+         */
+        $data = apply_filters('smartcloud_static_publisher_file_change_token_data', null, $url);
+        if (!is_array($data)) {
+            return null;
+        }
+
+        $fingerprint = trim((string) ($data['fingerprint'] ?? ''));
+        if ($fingerprint === '') {
+            return null;
+        }
+
+        $source = sanitize_key((string) ($data['source'] ?? 'file-backed-route'));
+        if ($source === '') {
+            $source = 'file-backed-route';
+        }
+
+        $identity = sanitize_text_field((string) ($data['identity'] ?? ''));
+        $payload = array(
+            'url' => $url,
+            'fileBacked' => array(
+                'source' => $source,
+                'identity' => $identity,
+                'fingerprint' => $fingerprint,
+            ),
+        );
+
+        return array(
+            'url' => $url,
+            'supported' => true,
+            'token' => hash('sha256', (string) wp_json_encode($payload)),
+            'tokenSource' => $source,
+            'postId' => null,
+            'dependencyPostIds' => array(),
+            'reason' => null,
         );
     }
 
