@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.0
 Requires PHP: 8.1
-Stable tag: 1.0.4
+Stable tag: 1.0.5
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -501,6 +501,10 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.0.5 =
+* Shared Hub: Added ownership-safe WP Suite Theme CSS fragment updates and hardened the frontend settings bootstrap for CSS-rich configuration values.
+* Compatibility: Updated the bundled shared Hub runtime to 2.5.6.
+
 = 1.0.4 =
 * Fix: Made the shared WP Suite Abilities foundation safe to load from multiple product plugin paths without redeclaring its base provider class.
 * Compatibility: Updated the bundled shared Hub runtime to 2.5.5 so existing sites re-elect a current Hub owner after upgrading.
@@ -523,6 +527,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.5 =
+Recommended compatibility update for safe shared WP Suite Theme CSS management and reliable frontend bootstrap data when CSS-rich settings are present.
 
 = 1.0.4 =
 Recommended compatibility update for sites running multiple WP Suite plugins. It prevents a shared Abilities class redeclaration during plugin loading or updates.
