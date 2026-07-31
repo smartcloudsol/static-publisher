@@ -23,7 +23,6 @@ export const getPublisherPlugin = (): PublisherPlugin | null => {
 const STRING_SITE_SETTING_KEYS = [
   "accountId",
   "siteId",
-  "wpsuiteThemeCss",
   "reCaptchaPublicKey",
 ] as const;
 
