@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.0
  * Requires PHP:      8.1
- * Version:           1.0.6
+ * Version:           1.0.7
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.0.6';
+const VERSION = '1.0.7';
 
 final class Plugin
 {
@@ -508,8 +508,10 @@ final class Plugin
 
     private function getWpSuiteSiteSettings(): array
     {
-        $slug = defined('SMARTCLOUD_WPSUITE_SLUG') ? SMARTCLOUD_WPSUITE_SLUG : 'hub-for-wpsuiteio';
-        $raw = get_option($slug . '/site-settings');
+        $raw = get_option('smartcloud-wpsuite/site-settings');
+        if (false === $raw) {
+            $raw = get_option('hub-for-wpsuiteio/site-settings');
+        }
 
         if (is_object($raw)) {
             $raw = get_object_vars($raw);
@@ -531,7 +533,7 @@ final class Plugin
     private function getWpSuiteUploadPaths(): array
     {
         $uploadDirInfo = wp_upload_dir();
-        $slug = defined('SMARTCLOUD_WPSUITE_SLUG') ? SMARTCLOUD_WPSUITE_SLUG : 'hub-for-wpsuiteio';
+        $slug = 'smartcloud-wpsuiteio';
 
         return array(
             'dir' => trailingslashit((string) ($uploadDirInfo['basedir'] ?? '')) . $slug . '/',

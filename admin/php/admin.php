@@ -39,7 +39,7 @@ class Admin
             return;
         }
 
-        $parentSlug = defined('SMARTCLOUD_WPSUITE_SLUG') ? SMARTCLOUD_WPSUITE_SLUG : 'hub-for-wpsuiteio';
+        $parentSlug = defined('SMARTCLOUD_WPSUITE_CANONICAL_SLUG') ? SMARTCLOUD_WPSUITE_CANONICAL_SLUG : 'smartcloud-wpsuite';
         if (menu_page_url($parentSlug, false) === '') {
             add_menu_page(
                 __('SmartCloud', 'smartcloud-static-publisher'),
