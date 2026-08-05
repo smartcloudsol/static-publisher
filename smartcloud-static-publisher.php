@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.0
  * Requires PHP:      8.1
- * Version:           1.0.7
+ * Version:           1.0.8
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.0.7';
+const VERSION = '1.0.8';
 
 final class Plugin
 {
@@ -335,7 +335,7 @@ final class Plugin
             $job['wpsuite'] = array(
                 'apiBase' => sanitize_text_field((string) ($job['wpsuite']['apiBase'] ?? '')),
                 'runtimeToken' => sanitize_text_field((string) ($job['wpsuite']['runtimeToken'] ?? ($job['wpsuite']['nonce'] ?? ''))),
-                'uploadUrl' => sanitize_url((string) ($job['wpsuite']['uploadUrl'] ?? '')),
+                'virtualAssetBaseUrl' => sanitize_url((string) ($job['wpsuite']['virtualAssetBaseUrl'] ?? ($job['wpsuite']['uploadUrl'] ?? ''))),
                 'subscriptionType' => sanitize_text_field((string) ($job['wpsuite']['subscriptionType'] ?? '')),
                 'siteSettings' => array(
                     'accountId' => sanitize_text_field((string) ($job['wpsuite']['siteSettings']['accountId'] ?? ($job['wpsuite']['accountId'] ?? ''))),
@@ -530,15 +530,15 @@ final class Plugin
         );
     }
 
-    private function getWpSuiteUploadPaths(): array
+    private function getWpSuiteVirtualAssetBaseUrl(): string
     {
-        $uploadDirInfo = wp_upload_dir();
-        $slug = 'smartcloud-wpsuiteio';
+        $assetPath = 'smartcloud-wpsuiteio';
 
-        return array(
-            'dir' => trailingslashit((string) ($uploadDirInfo['basedir'] ?? '')) . $slug . '/',
-            'url' => trailingslashit((string) ($uploadDirInfo['baseurl'] ?? '')) . $slug . '/',
-        );
+        if ((string) get_option('permalink_structure', '') !== '') {
+            return trailingslashit(home_url('/' . $assetPath));
+        }
+
+        return home_url('/?smartcloud_wpsuiteio_asset=');
     }
 
     private function generateRuntimeNonce(): string
@@ -566,12 +566,11 @@ final class Plugin
     public function getWpSuiteRuntimeConfig(): array
     {
         $settings = $this->getWpSuiteSiteSettings();
-        $uploadPaths = $this->getWpSuiteUploadPaths();
 
         return array(
             'apiBase' => $this->getWpSuiteApiBase(),
             'runtimeToken' => $this->getRuntimeNonce(),
-            'uploadUrl' => sanitize_url((string) ($uploadPaths['url'] ?? '')),
+            'virtualAssetBaseUrl' => sanitize_url($this->getWpSuiteVirtualAssetBaseUrl()),
             'siteSettings' => array(
                 'accountId' => $settings['accountId'],
                 'siteId' => $settings['siteId'],

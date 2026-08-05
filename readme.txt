@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.0
 Requires PHP: 8.1
-Stable tag: 1.0.7
+Stable tag: 1.0.8
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -500,6 +500,11 @@ SmartCloud Static Publisher is shipped to WordPress.org as a pre-built distribut
 Build steps and development notes are documented in the repository README.
 
 == Changelog ==
+
+= 1.0.8 =
+* Compatibility: Restored ownership-safe WP Suite Theme CSS fragment updates on WordPress-managed Custom CSS storage.
+* Fixed: Pointed exporter runtime configuration at the root-level virtual WP Suite license and configuration endpoints instead of the retired uploads directory.
+* Compatibility: Renamed the exporter runtime field from `uploadUrl` to `virtualAssetBaseUrl`, while retaining legacy input support for queued jobs created before the update.
 
 = 1.0.7 =
 * Packaging: Renamed the bundled shared runtime directory to `smartcloud-wpsuite`.
