@@ -2511,6 +2511,15 @@ export default function Main({ store }: MainProps) {
   const saveConfig = async () => {
     setSaving(true);
     try {
+      // PRO settings have their own remote persistence path. The normal
+      // WordPress settings endpoint intentionally receives no PRO values, so
+      // retain the currently hydrated remote state when replacing local state
+      // with that endpoint's response.
+      const preservedProConfig = {
+        scheduler: config.scheduler,
+        defaultDeploymentProfile: config.defaultDeploymentProfile,
+        deploymentProfiles: config.deploymentProfiles,
+      };
       const merged = {
         ...applyListFields(),
         defaultDeploymentProfile: "",
@@ -2529,7 +2538,10 @@ export default function Main({ store }: MainProps) {
         method: "POST",
         body: JSON.stringify(merged),
       });
-      const normalizedConfig = normalizePublisherConfig(response.config);
+      const normalizedConfig = normalizePublisherConfig({
+        ...response.config,
+        ...preservedProConfig,
+      });
       setConfig(normalizedConfig);
       setHasSavedConfig(true);
       notifications.show({

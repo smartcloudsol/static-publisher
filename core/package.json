@@ -29,7 +29,7 @@
     "build:types": "tsc -p tsconfig.types.json",
     "lint": "eslint 'src/**/*.ts' --report-unused-disable-directives --max-warnings 0",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "release:npm": "WPSUITE_PREMIUM=true yarn build && npm publish --access=public --registry=https://registry.npmjs.org/"
+    "release:npm": "yarn build && npm publish --access=public --registry=https://registry.npmjs.org/"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",

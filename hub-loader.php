@@ -6,7 +6,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-const SMARTCLOUD_WPSUITE_STATIC_PUBLISHER_HUB_VERSION = '2.5.10';
+const SMARTCLOUD_WPSUITE_STATIC_PUBLISHER_HUB_VERSION = '2.5.11';
 
 final class StaticPublisherHubLoader
 {
@@ -128,17 +128,38 @@ final class StaticPublisherHubLoader
 
         $ownerOption = SMARTCLOUD_WPSUITE_CANONICAL_SLUG . '/top-menu-owner';
         $legacyOwnerOption = SMARTCLOUD_WPSUITE_LEGACY_SLUG . '/top-menu-owner';
-        $owner = get_option($ownerOption);
-        $ownerVersion = get_option($ownerOption . '/version') ?? '1.0.0';
+        $siteId = get_current_blog_id();
+
+        $getBlogOption = static function (string $name, $default = '') use ($siteId) {
+            if (is_multisite()) {
+                return get_blog_option($siteId, $name, $default);
+            }
+            return get_option($name, $default);
+        };
+        $updateBlogOption = static function (string $name, $value, bool $autoload = false) use ($siteId) {
+            if (is_multisite()) {
+                return update_blog_option($siteId, $name, $value);
+            }
+            return update_option($name, $value, $autoload);
+        };
+        $owner = $getBlogOption($ownerOption, '');
+        $ownerVersion = $getBlogOption($ownerOption . '/version', '1.0.0');
         if (empty($owner)) {
-            $legacyOwner = get_option($legacyOwnerOption);
+            $legacyOwner = $getBlogOption($legacyOwnerOption, '');
             if (!empty($legacyOwner)) {
                 $owner = $legacyOwner;
-                $ownerVersion = get_option($legacyOwnerOption . '/version') ?? '1.0.0';
-                add_option($ownerOption, $owner, '', false);
-                add_option($ownerOption . '/version', $ownerVersion, '', false);
+                $ownerVersion = $getBlogOption($legacyOwnerOption . '/version', '1.0.0');
+                $updateBlogOption($ownerOption, $owner, false);
+                $updateBlogOption($ownerOption . '/version', $ownerVersion, false);
             }
         }
+
+        $setOwner = static function (string $plugin, string $version) use ($ownerOption, $legacyOwnerOption, $updateBlogOption) {
+            $updateBlogOption($ownerOption, $plugin, false);
+            $updateBlogOption($ownerOption . '/version', $version, false);
+            $updateBlogOption($legacyOwnerOption, $plugin, false);
+            $updateBlogOption($legacyOwnerOption . '/version', $version, false);
+        };
 
         $ownerMissing = empty($owner);
         $ownerIsMe = $owner === $this->plugin;
@@ -146,7 +167,11 @@ final class StaticPublisherHubLoader
         $pluginDir = plugin_dir_path(__DIR__);
         $ownerPlugin = ltrim(str_replace('\\/', '/', wp_unslash((string) $owner)), '/\\');
         $ownerPluginPath = wp_normalize_path(untrailingslashit($pluginDir) . '/' . $ownerPlugin);
-        $activeValidPlugins = array_map('wp_normalize_path', wp_get_active_and_valid_plugins());
+        $activeValidPlugins = wp_get_active_and_valid_plugins();
+        if (is_multisite()) {
+            $activeValidPlugins = array_merge($activeValidPlugins, wp_get_active_network_plugins());
+        }
+        $activeValidPlugins = array_map('wp_normalize_path', $activeValidPlugins);
 
         $ownerIsActive = !empty($ownerPlugin) && is_plugin_active($ownerPlugin);
         $ownerExists = !empty($ownerPlugin) && file_exists($ownerPluginPath);
@@ -158,10 +183,7 @@ final class StaticPublisherHubLoader
 
         if ($runtimeAlreadyLoaded) {
             if ($ownerMissing || $ownerInactive || $ownerVersionIsSmaller) {
-                update_option($ownerOption, $this->plugin, false);
-                update_option($ownerOption . '/version', SMARTCLOUD_WPSUITE_STATIC_PUBLISHER_HUB_VERSION, false);
-                update_option($legacyOwnerOption, $this->plugin, false);
-                update_option($legacyOwnerOption . '/version', SMARTCLOUD_WPSUITE_STATIC_PUBLISHER_HUB_VERSION, false);
+                $setOwner($this->plugin, SMARTCLOUD_WPSUITE_STATIC_PUBLISHER_HUB_VERSION);
             }
             return false;
         }
@@ -186,7 +208,8 @@ final class StaticPublisherHubLoader
                     define('SMARTCLOUD_WPSUITE_READY_HOOK', SMARTCLOUD_WPSUITE_CANONICAL_SLUG . '/ready');
                 }
 
-                if (file_exists(SMARTCLOUD_WPSUITE_PATH . 'index.php')) {
+                $runtimeIndex = SMARTCLOUD_WPSUITE_PATH . 'index.php';
+                if (file_exists($runtimeIndex)) {
                     require_once SMARTCLOUD_WPSUITE_PATH . 'index.php';
                 }
                 if (class_exists('\SmartCloud\WPSuite\Hub\HubAdmin')) {
@@ -194,18 +217,12 @@ final class StaticPublisherHubLoader
                 }
 
                 if (!$ownerIsMe || !$ownerVersionEquals) {
-                    update_option($ownerOption, $this->plugin, false);
-                    update_option($ownerOption . '/version', SMARTCLOUD_WPSUITE_STATIC_PUBLISHER_HUB_VERSION, false);
-                    update_option($legacyOwnerOption, $this->plugin, false);
-                    update_option($legacyOwnerOption . '/version', SMARTCLOUD_WPSUITE_STATIC_PUBLISHER_HUB_VERSION, false);
+                    $setOwner($this->plugin, SMARTCLOUD_WPSUITE_STATIC_PUBLISHER_HUB_VERSION);
                 }
             }
 
             if (!$ownerIsMe && $ownerVersionIsSmaller) {
-                update_option($ownerOption, $this->plugin, false);
-                update_option($ownerOption . '/version', SMARTCLOUD_WPSUITE_STATIC_PUBLISHER_HUB_VERSION, false);
-                update_option($legacyOwnerOption, $this->plugin, false);
-                update_option($legacyOwnerOption . '/version', SMARTCLOUD_WPSUITE_STATIC_PUBLISHER_HUB_VERSION, false);
+                $setOwner($this->plugin, SMARTCLOUD_WPSUITE_STATIC_PUBLISHER_HUB_VERSION);
             }
 
             return $result;
