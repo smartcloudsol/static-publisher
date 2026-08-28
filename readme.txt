@@ -2,9 +2,9 @@
 Contributors: smartcloud
 Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
-Tested up to: 7.0
+Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.10
+Stable tag: 1.0.11
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -501,6 +501,9 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.0.11 =
+* Compatibility: Declared compatibility with WordPress 7.1.
+
 = 1.0.10 =
 * Multisite: Store Hub ownership per site and recognize network-activated owners when selecting the shared Hub runtime.
 * Hub admin: Load the WebCrypto vendor before the shared admin bundle.
@@ -548,6 +551,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.11 =
+Declares compatibility with WordPress 7.1.
 
 = 1.0.10 =
 Recommended for multisite installations using the shared WP Suite Hub.

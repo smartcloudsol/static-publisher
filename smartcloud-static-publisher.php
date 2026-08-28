@@ -4,9 +4,9 @@
  * Plugin URI:        https://wpsuite.io/static-publisher/
  * Description:       Static export admin for WP Suite Static Publisher. Generates runtime config, queues export jobs, and shows exporter logs.
  * Requires at least: 6.9
- * Tested up to:      7.0
+ * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.0.10
+ * Version:           1.0.11
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.0.10';
+const VERSION = '1.0.11';
 
 final class Plugin
 {
