@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.12
+Stable tag: 1.0.13
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -504,6 +504,12 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.0.13 =
+* Restore safety: Recover the last public slug when a trashed post is restored and republished, even if WordPress retained a `__trashed` desired-slug alias, and repair earlier invalid journal projections before impact planning.
+* Content-sync performance: Add Media Library file change tokens and verified release-fingerprint reuse for unchanged WordPress core, plugin, and theme assets so targeted jobs avoid redundant asset downloads and rewrites.
+* Baseline safety: Extend release fingerprints to plugin and theme images, fonts, source maps, manifests, and other render dependencies before allowing trusted asset reuse.
+* Admin UI: Hide the native WordPress checkbox beneath Mantine switches and add appropriate pointer or disabled cursors.
+
 = 1.0.12 =
 * Incremental publishing: Refresh singular listing pages containing Query Loops and complete archive pagination families when published membership, taxonomy assignments, or sticky state changes.
 * Targeted content sync: Add scheduler-driven, resumable publish/update/taxonomy/sticky/unpublish/delete processing with manifest-backed tombstones, archive and sitemap reconciliation, completed CloudFront invalidations, verification, and cursor acknowledgement.
@@ -563,6 +569,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.13 =
+Recommended for sites using targeted content sync. Run one successful normal full or incremental publish after upgrading to establish the new release baseline and populate trusted Media Library asset tokens.
 
 = 1.0.12 =
 Recommended for incremental exports containing Query Loops or paginated archives and for Professional or Agency sites using targeted content sync. Run one successful normal publish after upgrading to establish the required baseline. Multisite subsite tracking is opt-in and requires network activation.

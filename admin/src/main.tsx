@@ -43,7 +43,13 @@ import {
   IconTrash,
 } from "@tabler/icons-react";
 import { __ } from "@wordpress/i18n";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { useDisclosure, useMediaQuery } from "@mantine/hooks";
 import {
   getStoreSelect,
@@ -55,6 +61,23 @@ import DocSidebar from "./DocSidebar";
 
 const TEXT_DOMAIN = "smartcloud-static-publisher";
 const IS_PREMIUM_BUILD = __WPSUITE_PREMIUM__;
+
+function switchControlStyles(
+  disabled = false,
+): Record<string, CSSProperties> {
+  const cursor = disabled ? "not-allowed" : "pointer";
+  return {
+    input: {
+      appearance: "none",
+      WebkitAppearance: "none",
+      opacity: 0,
+      margin: 0,
+      cursor,
+    },
+    track: { cursor },
+    label: { cursor },
+  };
+}
 
 type RewriteMode = "absolute" | "root-relative" | "relative";
 type LogLevel = "error" | "warn" | "info" | "debug";
@@ -1350,8 +1373,8 @@ function buildStableCurrentProgress(
       typeof processedPages === "number"
         ? Math.max(0, processedPages - (pagesRendered ?? 0))
         : undefined;
-    const assetsDownloaded = doneAssets;
-    const assetsTotal = assetsDiscovered ?? assetsDownloaded;
+    const assetsProcessed = doneAssets;
+    const assetsTotal = assetsDiscovered ?? assetsProcessed;
     const sitemapsTotal = sitemapsDiscovered ?? doneSitemaps;
 
     const stepElapsed = formatDurationShort(progress?.stepElapsedSec);
@@ -1371,8 +1394,8 @@ function buildStableCurrentProgress(
         pagesTotal ?? pagesSaved ?? 0
       }`;
     } else if (phase === "download-assets") {
-      message = `Downloading assets: ${assetsDownloaded ?? 0}/${
-        assetsTotal ?? assetsDownloaded ?? 0
+      message = `Processing assets: ${assetsProcessed ?? 0}/${
+        assetsTotal ?? assetsProcessed ?? 0
       }`;
     } else if (
       typeof pagesProcessed === "number" ||
@@ -1410,12 +1433,12 @@ function buildStableCurrentProgress(
       detailParts.push(`Discovered assets: ${assetsTotal ?? 0}`);
     }
     if (
-      typeof assetsDownloaded === "number" ||
+      typeof assetsProcessed === "number" ||
       typeof assetsTotal === "number"
     ) {
       detailParts.push(
-        `Downloaded assets: ${assetsDownloaded ?? 0}/${
-          assetsTotal ?? assetsDownloaded ?? 0
+        `Processed assets: ${assetsProcessed ?? 0}/${
+          assetsTotal ?? assetsProcessed ?? 0
         }`,
       );
     }
@@ -1458,8 +1481,8 @@ function buildStableCurrentProgress(
                   pagesRendered ?? 0
                 }, reused/skipped ${pagesReusedOrSkipped ?? 0}, processed ${
                   doneSitemaps ?? sitemapsTotal ?? 0
-                } sitemaps, downloaded ${
-                  assetsDownloaded ?? assetsTotal ?? 0
+                } sitemaps and ${
+                  assetsProcessed ?? assetsTotal ?? 0
                 } assets.`
               : `Processed ${pagesProcessed ?? 0} of ${
                   pagesTotal ?? 0
@@ -2747,6 +2770,9 @@ export default function Main({ store }: MainProps) {
   const contentSyncRuleStates = Object.values(
     contentSyncRuntime?.state?.rules ?? {},
   );
+  const contentSyncBaselineRequiredStates = contentSyncRuleStates.filter(
+    (ruleState) => ruleState.baselineStatus === "required",
+  );
   const contentSyncBaselines = contentSyncRuntime?.baseline?.entries ?? {};
   const currentContentSync = contentSyncRuntime?.current ?? null;
   const contentSyncCheckpoint = contentSyncRuntime?.checkpoint ?? null;
@@ -3518,10 +3544,7 @@ export default function Main({ store }: MainProps) {
                             }))
                           }
                           size="sm"
-                          styles={{
-                            track: { cursor: "pointer" },
-                            label: { cursor: "pointer" },
-                          }}
+                          styles={switchControlStyles()}
                         />
                         <SimpleGrid cols={{ base: 1, sm: 2 }}>
                           <TextInput
@@ -4325,6 +4348,39 @@ export default function Main({ store }: MainProps) {
                               </Text>
                             </Alert>
                           )}
+                          {contentSyncBaselineRequiredStates.length > 0 && (
+                            <Alert mb="md" color="red" variant="light">
+                              <Stack gap={4}>
+                                <Text fw={600} size="sm">
+                                  {__("New baseline required", TEXT_DOMAIN)}
+                                </Text>
+                                <Text size="sm">
+                                  {__(
+                                    "Scheduled content sync cannot continue until a successful full or incremental publish establishes a new verified baseline.",
+                                    TEXT_DOMAIN,
+                                  )}
+                                </Text>
+                                {contentSyncBaselineRequiredStates.map(
+                                  (ruleState, index) => (
+                                    <Text
+                                      key={
+                                        ruleState.coalesceKey ||
+                                        `${ruleState.ruleId || "rule"}-${index}`
+                                      }
+                                      size="xs"
+                                    >
+                                      <Code>{ruleState.ruleId || "-"}</Code>: {" "}
+                                      {ruleState.baselineReason ||
+                                        __(
+                                          "The active release changed.",
+                                          TEXT_DOMAIN,
+                                        )}
+                                    </Text>
+                                  ),
+                                )}
+                              </Stack>
+                            </Alert>
+                          )}
                           <SimpleGrid
                             cols={{ base: 1, md: 5 }}
                             spacing="md"
@@ -4928,10 +4984,7 @@ export default function Main({ store }: MainProps) {
                                   setAutoRefresh(e.currentTarget.checked)
                                 }
                                 size="sm"
-                                styles={{
-                                  track: { cursor: "pointer" },
-                                  label: { cursor: "pointer" },
-                                }}
+                                styles={switchControlStyles()}
                               />
                               {autoRefresh && (
                                 <Select
@@ -5224,10 +5277,9 @@ export default function Main({ store }: MainProps) {
                           }))
                         }
                         size="sm"
-                        styles={{
-                          track: { cursor: "pointer" },
-                          label: { cursor: "pointer" },
-                        }}
+                        styles={switchControlStyles(
+                          !proSchedulerEditingEnabled,
+                        )}
                       />
                       <Select
                         label={__("Scheduler timezone", TEXT_DOMAIN)}
@@ -6301,6 +6353,9 @@ export default function Main({ store }: MainProps) {
                 disabled={
                   !contentSyncMultisite || !contentSyncNetworkActive
                 }
+                styles={switchControlStyles(
+                  !contentSyncMultisite || !contentSyncNetworkActive,
+                )}
                 onChange={(event) =>
                   setSchedulerRuleDraft((prev) => ({
                     ...prev,
@@ -6342,6 +6397,7 @@ export default function Main({ store }: MainProps) {
                       }))
                     }
                     size="sm"
+                    styles={switchControlStyles()}
                   />
                 ))}
               </SimpleGrid>
@@ -6388,6 +6444,7 @@ export default function Main({ store }: MainProps) {
               }));
             }}
             size="sm"
+            styles={switchControlStyles()}
           />
 
           <Group justify="flex-end">

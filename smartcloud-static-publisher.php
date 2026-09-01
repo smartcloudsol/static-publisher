@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.0.12
+ * Version:           1.0.13
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.0.12';
+const VERSION = '1.0.13';
 
 final class Plugin
 {
@@ -815,6 +815,11 @@ final class Plugin
 
     private function buildChangeTokenItem(string $url, array $globalSignature, array $renderDependencyTargetSignatures): array
     {
+        $mediaLibraryItem = $this->buildMediaLibraryFileChangeTokenItem($url);
+        if (is_array($mediaLibraryItem)) {
+            return $mediaLibraryItem;
+        }
+
         $fileBackedItem = $this->buildFileBackedChangeTokenItem($url);
         if (is_array($fileBackedItem)) {
             return $fileBackedItem;
@@ -908,6 +913,81 @@ final class Plugin
         return $this->buildUnsupportedChangeTokenItem(
             $url,
             'URL did not resolve to a tracked WordPress route.'
+        );
+    }
+
+    /**
+     * Fingerprint a same-site file below the current site's uploads directory.
+     *
+     * The exporter uses this token to reuse a trusted Media Library asset
+     * without downloading it again. The public token contains no filesystem
+     * path and changes whenever WordPress replaces the underlying file.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function buildMediaLibraryFileChangeTokenItem(string $url): ?array
+    {
+        $uploads = wp_get_upload_dir();
+        $baseUrl = esc_url_raw((string) ($uploads['baseurl'] ?? ''), array('http', 'https'));
+        $baseDir = realpath((string) ($uploads['basedir'] ?? ''));
+        if (!empty($uploads['error']) || $baseUrl === '' || $baseDir === false || !is_dir($baseDir)) {
+            return null;
+        }
+
+        $urlParts = wp_parse_url($url);
+        $baseParts = wp_parse_url($baseUrl);
+        if (!is_array($urlParts) || !is_array($baseParts) || !$this->publicUrlAuthoritiesMatch($urlParts, $baseParts)) {
+            return null;
+        }
+
+        $urlPath = rawurldecode((string) ($urlParts['path'] ?? ''));
+        $basePath = rtrim(rawurldecode((string) ($baseParts['path'] ?? '')), '/');
+        if ($urlPath === '' || $basePath === '' || !str_starts_with($urlPath, $basePath . '/')) {
+            return null;
+        }
+
+        $relative = ltrim(substr($urlPath, strlen($basePath)), '/');
+        $segments = explode('/', str_replace('\\', '/', $relative));
+        if ($relative === '' || in_array('', $segments, true) || in_array('.', $segments, true) || in_array('..', $segments, true)) {
+            return null;
+        }
+
+        $candidate = realpath($baseDir . DIRECTORY_SEPARATOR . implode(DIRECTORY_SEPARATOR, $segments));
+        $normalizedBase = trailingslashit(wp_normalize_path($baseDir));
+        $normalizedCandidate = $candidate !== false ? wp_normalize_path($candidate) : '';
+        if (
+            $candidate === false
+            || !is_file($candidate)
+            || !str_starts_with($normalizedCandidate, $normalizedBase)
+        ) {
+            return null;
+        }
+
+        clearstatcache(true, $candidate);
+        $size = filesize($candidate);
+        $modified = filemtime($candidate);
+        if ($size === false || $modified === false) {
+            return null;
+        }
+
+        $identity = implode('/', array_map('rawurlencode', $segments));
+        $payload = array(
+            'url' => $url,
+            'mediaLibraryFile' => array(
+                'identity' => $identity,
+                'size' => (int) $size,
+                'modified' => (int) $modified,
+            ),
+        );
+
+        return array(
+            'url' => $url,
+            'supported' => true,
+            'token' => hash('sha256', (string) wp_json_encode($payload)),
+            'tokenSource' => 'wp-media-file',
+            'postId' => null,
+            'dependencyPostIds' => array(),
+            'reason' => null,
         );
     }
 

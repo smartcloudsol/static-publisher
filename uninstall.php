@@ -56,6 +56,12 @@ function smartcloud_static_publisher_uninstall_site(): void
     $wpdb->query("DROP TABLE IF EXISTS {$table}"); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.SchemaChange -- Explicit plugin-owned uninstall cleanup.
     $consumers_table = $wpdb->prefix . 'smartcloud_static_publisher_content_consumers';
     $wpdb->query("DROP TABLE IF EXISTS {$consumers_table}"); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.SchemaChange -- Explicit plugin-owned uninstall cleanup.
+    foreach (array(
+        '_smartcloud_static_publisher_last_public_projection',
+        '_smartcloud_static_publisher_last_public_slug',
+    ) as $meta_key) {
+        $wpdb->delete($wpdb->postmeta, array('meta_key' => $meta_key), array('%s')); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Explicit plugin-owned uninstall cleanup.
+    }
 
     smartcloud_static_publisher_remove_storage();
 }
