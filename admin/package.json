@@ -1,7 +1,7 @@
 {
   "name": "@smart-cloud/publisher-admin",
   "private": true,
-  "version": "1.0.5",
+  "version": "1.0.8",
   "type": "module",
   "scripts": {
     "dev": "vite --host",
@@ -11,7 +11,7 @@
     "preview": "vite preview --host"
   },
   "dependencies": {
-    "@smart-cloud/publisher-core": "^1.1.5",
+    "@smart-cloud/publisher-core": "^1.1.8",
     "@smart-cloud/wpsuite-core": "^2.3.2",
     "@tabler/icons-react": "^3.46.0"
   },

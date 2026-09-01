@@ -10,9 +10,81 @@ export type PublisherJobCommand =
   | "deploy"
   | "invalidate"
   | "retry-timeouts"
-  | "url";
+  | "url"
+  | "content-sync";
 
 export type PublisherCrawlMode = "full" | "incremental";
+
+export interface PublisherContentSyncScope {
+  postTypes: string[];
+  listingPaths: string[];
+  includeSubsites: boolean;
+  includePostTypeArchives: boolean;
+  includeTaxonomyArchives: boolean;
+  includeAuthorArchives: boolean;
+  includeDateArchives: boolean;
+  includePostsPage: boolean;
+  includeSitemapChain: boolean;
+}
+
+export interface PublisherContentProjectionTerm {
+  taxonomy: string;
+  termId: number;
+  url: string | null;
+}
+
+export type PublisherContentArchiveKind =
+  | "post-type"
+  | "taxonomy"
+  | "author"
+  | "date"
+  | "posts-page"
+  | "listing";
+
+export interface PublisherContentArchiveProjection {
+  kind: PublisherContentArchiveKind;
+  url: string;
+  blogId?: number;
+  postType?: string;
+  taxonomy?: string;
+  termId?: number;
+  authorId?: number;
+  year?: number;
+  month?: number;
+  day?: number;
+}
+
+export interface PublisherContentProjection {
+  blogId?: number;
+  status: string;
+  url: string | null;
+  authorId: number;
+  publishedGmt: string | null;
+  modifiedGmt: string | null;
+  terms: PublisherContentProjectionTerm[];
+  sticky: boolean;
+  archives: string[];
+  archiveFamilies: PublisherContentArchiveProjection[];
+}
+
+export interface PublisherContentChangeEvent {
+  sequence: number;
+  recordedGmt: string;
+  postId: number;
+  blogId: number;
+  postType: string;
+  operation:
+    | "publish"
+    | "update"
+    | "unpublish"
+    | "delete"
+    | "permalink"
+    | "taxonomy"
+    | "sticky";
+  before: PublisherContentProjection | null;
+  after: PublisherContentProjection | null;
+  correlationId: string | null;
+}
 
 export interface PublisherSchedulerRule {
   id: string;
@@ -22,6 +94,15 @@ export interface PublisherSchedulerRule {
   crawlMode?: PublisherCrawlMode;
   deploymentProfile?: string;
   url?: string;
+  postTypes?: string[];
+  listingPaths?: string[];
+  includeSubsites?: boolean;
+  includePostTypeArchives?: boolean;
+  includeTaxonomyArchives?: boolean;
+  includeAuthorArchives?: boolean;
+  includeDateArchives?: boolean;
+  includePostsPage?: boolean;
+  includeSitemapChain?: boolean;
 }
 
 export interface PublisherSchedulerConfig {

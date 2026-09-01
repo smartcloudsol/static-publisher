@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.0.11
+ * Version:           1.0.12
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.0.11';
+const VERSION = '1.0.12';
 
 final class Plugin
 {
@@ -48,6 +48,7 @@ final class Plugin
 
     private static ?Plugin $instance = null;
     private ?Admin $admin = null;
+    private ?ContentChangeJournal $contentChangeJournal = null;
 
     public static function instance(): Plugin
     {
@@ -61,6 +62,11 @@ final class Plugin
 
         if ($this->admin instanceof Admin) {
             $this->admin->registerHooks();
+        }
+
+        if ($this->contentChangeJournal instanceof ContentChangeJournal) {
+            $this->contentChangeJournal->registerHooks();
+            add_action('init', array($this->contentChangeJournal, 'maybeInstallSchema'), 5);
         }
 
         add_action('rest_api_init', array($this, 'registerRestRoutes'));
@@ -77,6 +83,9 @@ final class Plugin
 
         $this->writeJsonFile($paths['config'], $this->buildRuntimeConfig($this->getConfig()));
         $this->writeJsonFile($paths['queue'], array());
+        if ($this->contentChangeJournal instanceof ContentChangeJournal) {
+            $this->contentChangeJournal->installSchema();
+        }
     }
 
     private function defineConstants(): void
@@ -105,8 +114,15 @@ final class Plugin
             require_once SMARTCLOUD_STATIC_PUBLISHER_PATH . 'admin/admin.php';
         }
 
+        if (file_exists(SMARTCLOUD_STATIC_PUBLISHER_PATH . 'includes/class-content-change-journal.php')) {
+            require_once SMARTCLOUD_STATIC_PUBLISHER_PATH . 'includes/class-content-change-journal.php';
+        }
+
         if (class_exists('\SmartCloud\WPSuite\StaticPublisher\Admin\Admin')) {
             $this->admin = new Admin($this);
+        }
+        if (class_exists('\SmartCloud\WPSuite\StaticPublisher\ContentChangeJournal')) {
+            $this->contentChangeJournal = new ContentChangeJournal($this);
         }
     }
 
@@ -117,6 +133,9 @@ final class Plugin
             'permission_callback' => array($this, 'canReadChangeTokens'),
             'callback' => array($this, 'handleGetChangeTokens'),
         ));
+        if ($this->contentChangeJournal instanceof ContentChangeJournal) {
+            $this->contentChangeJournal->registerRestRoutes();
+        }
     }
 
     public function canReadChangeTokens(\WP_REST_Request $request): bool
@@ -135,24 +154,70 @@ final class Plugin
         $data = is_array($payload) ? $payload : array();
         $rawUrls = isset($data['urls']) && is_array($data['urls']) ? $data['urls'] : array();
 
-        $urls = array();
+        $targets = array();
         foreach ($rawUrls as $rawUrl) {
             $normalized = $this->normalizePublicUrlForChangeToken((string) $rawUrl);
             if ($normalized !== null) {
-                $urls[] = $normalized;
+                $targets[$normalized] = array(
+                    'url' => $normalized,
+                    'blogId' => $this->resolveNetworkBlogIdForChangeTokenUrl($normalized),
+                );
             }
         }
 
-        $urls = array_values(array_unique($urls));
-        if (count($urls) > 250) {
-            $urls = array_slice($urls, 0, 250);
+        $targets = array_values($targets);
+        if (count($targets) > 250) {
+            $targets = array_slice($targets, 0, 250);
         }
 
-        $renderDependencyTargetSignatures = $this->computeActiveCodeRenderDependencyTargetSignatures();
-        $globalSignature = $this->computeGlobalRenderDependencySignature($renderDependencyTargetSignatures);
+        $signatureCache = array();
         $items = array();
-        foreach ($urls as $url) {
-            $items[] = $this->buildChangeTokenItem($url, $globalSignature, $renderDependencyTargetSignatures);
+        foreach ($targets as $target) {
+            $url = (string) ($target['url'] ?? '');
+            $blogId = max(0, (int) ($target['blogId'] ?? 0));
+            $currentBlogId = get_current_blog_id();
+            $hadWpRewrite = array_key_exists('wp_rewrite', $GLOBALS);
+            $originalWpRewrite = $GLOBALS['wp_rewrite'] ?? null;
+            $switched = $blogId > 0 && $blogId !== $currentBlogId && switch_to_blog($blogId);
+
+            try {
+                if ($switched && class_exists('\WP_Rewrite')) {
+                    $GLOBALS['wp_rewrite'] = new \WP_Rewrite();
+                }
+                $contextBlogId = get_current_blog_id();
+                $contextUrl = $this->normalizePublicUrlForChangeToken($url);
+                if ($contextUrl === null) {
+                    $items[] = $this->buildUnsupportedChangeTokenItem(
+                        $url,
+                        'URL did not resolve to a site in the current WordPress network.'
+                    );
+                    continue;
+                }
+
+                if (!isset($signatureCache[$contextBlogId])) {
+                    $renderDependencyTargetSignatures = $this->computeActiveCodeRenderDependencyTargetSignatures();
+                    $signatureCache[$contextBlogId] = array(
+                        'renderTargets' => $renderDependencyTargetSignatures,
+                        'global' => $this->computeGlobalRenderDependencySignature($renderDependencyTargetSignatures),
+                    );
+                }
+
+                $contextSignatures = $signatureCache[$contextBlogId];
+                $items[] = $this->buildChangeTokenItem(
+                    $contextUrl,
+                    (array) ($contextSignatures['global'] ?? array()),
+                    (array) ($contextSignatures['renderTargets'] ?? array())
+                );
+            } finally {
+                if ($switched) {
+                    if ($hadWpRewrite) {
+                        $GLOBALS['wp_rewrite'] = $originalWpRewrite;
+                    } else {
+                        unset($GLOBALS['wp_rewrite']);
+                    }
+                    restore_current_blog();
+                }
+            }
         }
 
         return new \WP_REST_Response(array(
@@ -334,7 +399,6 @@ final class Plugin
         if (isset($job['wpsuite']) && is_array($job['wpsuite'])) {
             $job['wpsuite'] = array(
                 'apiBase' => sanitize_text_field((string) ($job['wpsuite']['apiBase'] ?? '')),
-                'runtimeToken' => sanitize_text_field((string) ($job['wpsuite']['runtimeToken'] ?? ($job['wpsuite']['nonce'] ?? ''))),
                 'virtualAssetBaseUrl' => sanitize_url((string) ($job['wpsuite']['virtualAssetBaseUrl'] ?? ($job['wpsuite']['uploadUrl'] ?? ''))),
                 'subscriptionType' => sanitize_text_field((string) ($job['wpsuite']['subscriptionType'] ?? '')),
                 'siteSettings' => array(
@@ -608,14 +672,28 @@ final class Plugin
         if ($rawUrl === '') {
             return null;
         }
-
-        $siteOrigin = $this->sanitizeOrigin(home_url('/'));
-        if ($siteOrigin === '') {
+        if (str_starts_with($rawUrl, '//')) {
             return null;
         }
 
+        $siteUrl = esc_url_raw(home_url('/'), array('http', 'https'));
+        $siteParts = wp_parse_url($siteUrl);
+        if ($siteUrl === '' || !is_array($siteParts)) {
+            return null;
+        }
+        $siteOrigin = $this->buildPublicUrlOrigin($siteParts);
+        $siteBasePath = $this->normalizeSiteBasePath((string) ($siteParts['path'] ?? '/'));
+
         if (strpos($rawUrl, '/') === 0) {
-            $rawUrl = $siteOrigin . $rawUrl;
+            $relativeParts = wp_parse_url($rawUrl);
+            $relativePath = is_array($relativeParts) ? (string) ($relativeParts['path'] ?? '/') : '/';
+            if (!$this->urlPathBelongsToSite($relativePath, $siteBasePath)) {
+                $relativePath = rtrim($siteBasePath, '/') . '/' . ltrim($relativePath, '/');
+            }
+            $relativeQuery = is_array($relativeParts) && !empty($relativeParts['query'])
+                ? '?' . (string) $relativeParts['query']
+                : '';
+            $rawUrl = $siteOrigin . $relativePath . $relativeQuery;
         }
 
         $url = esc_url_raw($rawUrl, array('http', 'https'));
@@ -624,28 +702,115 @@ final class Plugin
         }
 
         $urlParts = wp_parse_url($url);
-        $siteParts = wp_parse_url($siteOrigin);
         if (!is_array($urlParts) || !is_array($siteParts)) {
             return null;
         }
 
-        $urlScheme = strtolower((string) ($urlParts['scheme'] ?? ''));
-        $siteScheme = strtolower((string) ($siteParts['scheme'] ?? ''));
-        $urlHost = strtolower((string) ($urlParts['host'] ?? ''));
-        $siteHost = strtolower((string) ($siteParts['host'] ?? ''));
-        $urlPort = (string) ($urlParts['port'] ?? '');
-        $sitePort = (string) ($siteParts['port'] ?? '');
-
-        if ($urlScheme !== $siteScheme || $urlHost !== $siteHost || $urlPort !== $sitePort) {
+        if (!$this->publicUrlAuthoritiesMatch($urlParts, $siteParts)) {
             return null;
         }
 
         $path = isset($urlParts['path']) ? (string) $urlParts['path'] : '/';
+        if (!$this->urlPathBelongsToSite($path, $siteBasePath)) {
+            return null;
+        }
         $query = isset($urlParts['query']) && $urlParts['query'] !== ''
             ? '?' . (string) $urlParts['query']
             : '';
 
         return $siteOrigin . $path . $query;
+    }
+
+    private function resolveNetworkBlogIdForChangeTokenUrl(string $url): int
+    {
+        $currentBlogId = get_current_blog_id();
+        if (!is_multisite() || !function_exists('get_sites')) {
+            return $currentBlogId;
+        }
+
+        $urlParts = wp_parse_url($url);
+        if (!is_array($urlParts)) {
+            return $currentBlogId;
+        }
+
+        $siteIds = get_sites(array(
+            'network_id' => get_current_network_id(),
+            'number' => 0,
+            'fields' => 'ids',
+            'archived' => 0,
+            'spam' => 0,
+            'deleted' => 0,
+        ));
+        if (!is_array($siteIds)) {
+            return $currentBlogId;
+        }
+
+        $selectedBlogId = $currentBlogId;
+        $selectedPathLength = -1;
+        foreach ($siteIds as $siteId) {
+            $candidateBlogId = max(0, (int) $siteId);
+            if ($candidateBlogId <= 0) {
+                continue;
+            }
+            $candidateParts = wp_parse_url(get_home_url($candidateBlogId, '/'));
+            if (!is_array($candidateParts) || !$this->publicUrlAuthoritiesMatch($urlParts, $candidateParts)) {
+                continue;
+            }
+            $candidateBasePath = $this->normalizeSiteBasePath((string) ($candidateParts['path'] ?? '/'));
+            if (!$this->urlPathBelongsToSite((string) ($urlParts['path'] ?? '/'), $candidateBasePath)) {
+                continue;
+            }
+            $candidatePathLength = strlen($candidateBasePath);
+            if ($candidatePathLength > $selectedPathLength) {
+                $selectedBlogId = $candidateBlogId;
+                $selectedPathLength = $candidatePathLength;
+            }
+        }
+
+        return $selectedBlogId;
+    }
+
+    private function buildPublicUrlOrigin(array $parts): string
+    {
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        if (!in_array($scheme, array('http', 'https'), true) || $host === '') {
+            return '';
+        }
+        $port = isset($parts['port']) ? ':' . (int) $parts['port'] : '';
+        return $scheme . '://' . $host . $port;
+    }
+
+    private function publicUrlAuthoritiesMatch(array $left, array $right): bool
+    {
+        $leftScheme = strtolower((string) ($left['scheme'] ?? ''));
+        $rightScheme = strtolower((string) ($right['scheme'] ?? ''));
+        $leftHost = strtolower((string) ($left['host'] ?? ''));
+        $rightHost = strtolower((string) ($right['host'] ?? ''));
+        $leftPort = isset($left['port']) ? (int) $left['port'] : ($leftScheme === 'https' ? 443 : 80);
+        $rightPort = isset($right['port']) ? (int) $right['port'] : ($rightScheme === 'https' ? 443 : 80);
+
+        return $leftScheme === $rightScheme
+            && $leftHost !== ''
+            && $leftHost === $rightHost
+            && $leftPort === $rightPort;
+    }
+
+    private function normalizeSiteBasePath(string $path): string
+    {
+        $normalized = '/' . trim($path, '/');
+        return $normalized === '/' ? '/' : $normalized . '/';
+    }
+
+    private function urlPathBelongsToSite(string $path, string $siteBasePath): bool
+    {
+        $normalizedPath = '/' . ltrim($path, '/');
+        if ($siteBasePath === '/') {
+            return true;
+        }
+
+        return $normalizedPath === rtrim($siteBasePath, '/')
+            || str_starts_with($normalizedPath, $siteBasePath);
     }
 
     private function buildChangeTokenItem(string $url, array $globalSignature, array $renderDependencyTargetSignatures): array
@@ -698,6 +863,12 @@ final class Plugin
                 );
             }
 
+            $listingDependency = $this->buildListingChangeTokenDataForPost(
+                $url,
+                $post,
+                (array) ($sharedLayoutDependency['listingScopes'] ?? array())
+            );
+
             $payload = array(
                 'url' => $url,
                 'post' => array(
@@ -707,6 +878,7 @@ final class Plugin
                     'modifiedGmt' => (string) ($post->post_modified_gmt ?: $post->post_modified),
                 ),
                 'dependencies' => $dependencyPayload,
+                'listings' => $listingDependency,
                 'code' => $this->buildScopedRenderDependencySignature(
                     $scopedRenderDependencyTargets,
                     $renderDependencyTargetSignatures
@@ -1267,7 +1439,7 @@ final class Plugin
     {
         static $cache = array();
 
-        $cacheKey = (int) $post->ID . ':' . (string) ($post->post_modified_gmt ?: $post->post_modified);
+        $cacheKey = get_current_blog_id() . ':' . (int) $post->ID . ':' . (string) ($post->post_modified_gmt ?: $post->post_modified);
         if (isset($cache[$cacheKey]) && is_array($cache[$cacheKey])) {
             return $cache[$cacheKey];
         }
@@ -1326,8 +1498,9 @@ final class Plugin
             if ($blockName !== '') {
                 $this->addScopedRenderDependencyTargetForBlockName($blockName, $renderDependencyTargetSignatures, $targets);
 
-                if (isset($blockTypeCache[$blockName])) {
-                    $blockType = $blockTypeCache[$blockName];
+                $blockTypeCacheKey = get_current_blog_id() . ':' . $blockName;
+                if (isset($blockTypeCache[$blockTypeCacheKey])) {
+                    $blockType = $blockTypeCache[$blockTypeCacheKey];
                 } else {
                     $blockType = null;
                     if (class_exists('\WP_Block_Type_Registry')) {
@@ -1345,7 +1518,7 @@ final class Plugin
                         }
                     }
 
-                    $blockTypeCache[$blockName] = $blockType;
+                    $blockTypeCache[$blockTypeCacheKey] = $blockType;
                 }
 
                 if ($blockType instanceof \WP_Block_Type) {
@@ -1487,46 +1660,47 @@ final class Plugin
             return null;
         }
 
-        if (array_key_exists($normalizedWidgetType, $cache)) {
-            return $cache[$normalizedWidgetType];
+        $cacheKey = get_current_blog_id() . ':' . $normalizedWidgetType;
+        if (array_key_exists($cacheKey, $cache)) {
+            return $cache[$cacheKey];
         }
 
         $fallback = $this->matchScopedRenderDependencyTargetBySlug($normalizedWidgetType, $renderDependencyTargetSignatures);
 
         if (!class_exists('\Elementor\Plugin')) {
-            $cache[$normalizedWidgetType] = $fallback;
-            return $cache[$normalizedWidgetType];
+            $cache[$cacheKey] = $fallback;
+            return $cache[$cacheKey];
         }
 
         try {
             $elementorInstance = \Elementor\Plugin::$instance ?? null;
         } catch (\Throwable $error) {
             unset($error);
-            $cache[$normalizedWidgetType] = $fallback;
-            return $cache[$normalizedWidgetType];
+            $cache[$cacheKey] = $fallback;
+            return $cache[$cacheKey];
         }
 
         if (!is_object($elementorInstance) || !isset($elementorInstance->widgets_manager) || !is_object($elementorInstance->widgets_manager)) {
-            $cache[$normalizedWidgetType] = $fallback;
-            return $cache[$normalizedWidgetType];
+            $cache[$cacheKey] = $fallback;
+            return $cache[$cacheKey];
         }
 
         $widgetsManager = $elementorInstance->widgets_manager;
         if (!method_exists($widgetsManager, 'get_widget_types')) {
-            $cache[$normalizedWidgetType] = $fallback;
-            return $cache[$normalizedWidgetType];
+            $cache[$cacheKey] = $fallback;
+            return $cache[$cacheKey];
         }
 
         $widgetTypes = $widgetsManager->get_widget_types();
         if (!is_array($widgetTypes)) {
-            $cache[$normalizedWidgetType] = $fallback;
-            return $cache[$normalizedWidgetType];
+            $cache[$cacheKey] = $fallback;
+            return $cache[$cacheKey];
         }
 
         $widget = $widgetTypes[$widgetType] ?? $widgetTypes[$normalizedWidgetType] ?? null;
         if (!is_object($widget)) {
-            $cache[$normalizedWidgetType] = $fallback;
-            return $cache[$normalizedWidgetType];
+            $cache[$cacheKey] = $fallback;
+            return $cache[$cacheKey];
         }
 
         try {
@@ -1538,16 +1712,16 @@ final class Plugin
                     $renderDependencyTargetSignatures
                 );
                 if ($resolvedTarget !== null) {
-                    $cache[$normalizedWidgetType] = $resolvedTarget;
-                    return $cache[$normalizedWidgetType];
+                    $cache[$cacheKey] = $resolvedTarget;
+                    return $cache[$cacheKey];
                 }
             }
         } catch (\ReflectionException $error) {
             unset($error);
         }
 
-        $cache[$normalizedWidgetType] = $fallback;
-        return $cache[$normalizedWidgetType];
+        $cache[$cacheKey] = $fallback;
+        return $cache[$cacheKey];
     }
 
     private function addScopedRenderDependencyTargetsForCallback($callback, array $renderDependencyTargetSignatures, array &$targets): void
@@ -1737,6 +1911,7 @@ final class Plugin
     {
         return array(
             'targets' => array(),
+            'listingScopes' => array(),
             'signature' => array(
                 'hash' => hash('sha256', '[]'),
                 'items' => array(),
@@ -1753,12 +1928,12 @@ final class Plugin
             return $this->emptySharedLayoutDependencyData();
         }
 
-        $cacheKey = $normalizedUrl . '|' . sanitize_key($forcedTemplateType);
+        $cacheKey = get_current_blog_id() . '|' . $normalizedUrl . '|' . sanitize_key($forcedTemplateType);
         if ($query === null && isset($cache[$cacheKey]) && is_array($cache[$cacheKey])) {
             return $cache[$cacheKey];
         }
 
-        if (!current_theme_supports('block-templates') || !function_exists('get_query_template')) {
+        if (!function_exists('get_query_template')) {
             $result = $this->emptySharedLayoutDependencyData();
             if ($query === null) {
                 $cache[$cacheKey] = $result;
@@ -1852,10 +2027,12 @@ final class Plugin
             $visitedTemplateRefs['wp_template:' . $templateId] = true;
         }
         $visitedPostRefs = array();
+        $listingScopes = array();
 
         if ($templateContent !== '' && function_exists('has_blocks') && has_blocks($templateContent)) {
             $blocks = parse_blocks($templateContent);
             if (is_array($blocks)) {
+                $this->collectBlockListingScopes($blocks, $listingScopes, array());
                 $this->collectSharedLayoutDependencyReferencesFromBlocks(
                     $blocks,
                     $renderDependencyTargetSignatures,
@@ -1869,6 +2046,7 @@ final class Plugin
 
         $result = array(
             'targets' => $this->normalizeScopedRenderDependencyTargets($targets, $renderDependencyTargetSignatures),
+            'listingScopes' => array_values(array_unique(array_filter(array_map('sanitize_key', $listingScopes)))),
             'signature' => array(
                 'hash' => hash('sha256', (string) wp_json_encode($layoutItems)),
                 'items' => $layoutItems,
@@ -2018,14 +2196,15 @@ final class Plugin
                 if ($slug !== '' && $theme !== '') {
                     $templatePartId = $theme . '//' . $slug;
                     $visitedKey = 'wp_template_part:' . $templatePartId;
+                    $cacheKey = get_current_blog_id() . ':' . $visitedKey;
                     if (!isset($visitedTemplateRefs[$visitedKey])) {
                         $visitedTemplateRefs[$visitedKey] = true;
 
-                        if (isset($blockTemplateCache[$visitedKey])) {
-                            $templatePart = $blockTemplateCache[$visitedKey];
+                        if (isset($blockTemplateCache[$cacheKey])) {
+                            $templatePart = $blockTemplateCache[$cacheKey];
                         } else {
                             $templatePart = get_block_template($templatePartId, 'wp_template_part');
-                            $blockTemplateCache[$visitedKey] = $templatePart ?: false;
+                            $blockTemplateCache[$cacheKey] = $templatePart ?: false;
                         }
 
                         if (is_object($templatePart)) {
@@ -2144,7 +2323,234 @@ final class Plugin
             'maxNumPages' => (int) $query->max_num_pages,
             'postIds' => $postIds,
             'posts' => $posts,
+            // Publishing or removing one item can shift every later page.
+            // Bind each page token to the complete archive-family membership
+            // so an incremental run never reuses a stale pagination page.
+            'familyGeneration' => $this->buildArchiveFamilyGeneration($queryArgs),
         );
+    }
+
+    private function buildArchiveFamilyGeneration(array $queryArgs): array
+    {
+        static $cache = array();
+        unset($queryArgs['paged'], $queryArgs['posts_per_page'], $queryArgs['offset']);
+        $cacheKey = get_current_blog_id() . ':' . hash('sha256', (string) wp_json_encode($queryArgs));
+        if (isset($cache[$cacheKey])) {
+            return $cache[$cacheKey];
+        }
+
+        $query = new \WP_Query(array_merge(
+            array(
+                'post_status' => 'publish',
+                'posts_per_page' => -1,
+                'orderby' => array('date' => 'DESC', 'ID' => 'DESC'),
+                'ignore_sticky_posts' => true,
+                'fields' => 'ids',
+                'no_found_rows' => true,
+                'update_post_meta_cache' => false,
+                'update_post_term_cache' => false,
+            ),
+            $queryArgs
+        ));
+        $items = array();
+        foreach ((array) $query->posts as $postId) {
+            $post = get_post((int) $postId);
+            if ($post instanceof \WP_Post) {
+                $items[] = array(
+                    'id' => (int) $post->ID,
+                    'modifiedGmt' => (string) ($post->post_modified_gmt ?: $post->post_modified),
+                    'publishedGmt' => (string) ($post->post_date_gmt ?: $post->post_date),
+                );
+            }
+        }
+        $stickyIds = array_values(array_unique(array_map('absint', (array) get_option('sticky_posts', array()))));
+        sort($stickyIds);
+        $cache[$cacheKey] = array(
+            'count' => count($items),
+            'fingerprint' => hash('sha256', (string) wp_json_encode(array(
+                'items' => $items,
+                'stickyPostIds' => $stickyIds,
+            ))),
+        );
+        return $cache[$cacheKey];
+    }
+
+    /**
+     * Fingerprint dynamic listing dependencies embedded in an otherwise
+     * singular route. Query Loop results are not explicit post references, so
+     * omitting this data can incorrectly reuse a listing page after a publish,
+     * unpublish, taxonomy assignment, or sticky-state change.
+     */
+    private function buildListingChangeTokenDataForPost(string $url, \WP_Post $post, array $templateScopes = array()): array
+    {
+        $scopes = $templateScopes;
+        if (function_exists('has_blocks') && has_blocks($post->post_content)) {
+            $blocks = parse_blocks((string) $post->post_content);
+            if (is_array($blocks)) {
+                $this->collectBlockListingScopes($blocks, $scopes, array());
+            }
+        }
+
+        $elementorData = get_post_meta($post->ID, '_elementor_data', true);
+        if (is_string($elementorData) && $elementorData !== '') {
+            $elements = json_decode($elementorData, true);
+            if (is_array($elements)) {
+                $this->collectElementorListingScopes($elements, $scopes);
+            }
+        }
+
+        /**
+         * Let a theme or plugin describe query dependencies that cannot be
+         * inferred from core Query blocks or common Elementor listing widgets.
+         * Providers return scalar/array data with a stable JSON representation.
+         */
+        $providerData = apply_filters(
+            'smartcloud_static_publisher_listing_change_token_data',
+            array(),
+            $url,
+            $post
+        );
+
+        $normalizedScopes = array_values(array_unique(array_filter(array_map('sanitize_key', $scopes))));
+        sort($normalizedScopes);
+        $signatures = array();
+        foreach ($normalizedScopes as $postType) {
+            $postTypeObject = get_post_type_object($postType);
+            if (!($postTypeObject instanceof \WP_Post_Type) || !$postTypeObject->publicly_queryable) {
+                continue;
+            }
+            $signatures[$postType] = $this->buildPostTypeListingGeneration($postType);
+        }
+
+        return array(
+            'scopes' => $signatures,
+            'provider' => is_array($providerData) ? $providerData : array('fingerprint' => (string) $providerData),
+        );
+    }
+
+    private function collectBlockListingScopes(array $blocks, array &$scopes, array $visitedReferences): void
+    {
+        foreach ($blocks as $block) {
+            $blockName = (string) ($block['blockName'] ?? '');
+            $attrs = isset($block['attrs']) && is_array($block['attrs']) ? $block['attrs'] : array();
+
+            if ($blockName === 'core/query') {
+                $query = isset($attrs['query']) && is_array($attrs['query']) ? $attrs['query'] : array();
+                $postTypes = $query['postType'] ?? 'post';
+                foreach (is_array($postTypes) ? $postTypes : array($postTypes) as $postType) {
+                    $scopes[] = sanitize_key((string) $postType) ?: 'post';
+                }
+            } elseif ($blockName === 'core/latest-posts') {
+                $scopes[] = sanitize_key((string) ($attrs['postType'] ?? 'post')) ?: 'post';
+            }
+
+            if ($blockName === 'core/template-part' && function_exists('get_block_template')) {
+                $slug = sanitize_title((string) ($attrs['slug'] ?? ''));
+                $theme = sanitize_text_field((string) ($attrs['theme'] ?? get_stylesheet()));
+                $referenceKey = 'template-part:' . $theme . '//' . $slug;
+                if ($slug !== '' && $theme !== '' && !isset($visitedReferences[$referenceKey])) {
+                    $visitedReferences[$referenceKey] = true;
+                    $templatePart = get_block_template($theme . '//' . $slug, 'wp_template_part');
+                    $templatePartContent = is_object($templatePart) && isset($templatePart->content)
+                        ? (string) $templatePart->content
+                        : '';
+                    if ($templatePartContent !== '' && has_blocks($templatePartContent)) {
+                        $templatePartBlocks = parse_blocks($templatePartContent);
+                        if (is_array($templatePartBlocks)) {
+                            $this->collectBlockListingScopes($templatePartBlocks, $scopes, $visitedReferences);
+                        }
+                    }
+                }
+            }
+
+            if ($blockName === 'core/block' && !empty($attrs['ref'])) {
+                $referenceId = absint($attrs['ref']);
+                $referenceKey = 'post:' . $referenceId;
+                if ($referenceId > 0 && !isset($visitedReferences[$referenceKey])) {
+                    $visitedReferences[$referenceKey] = true;
+                    $reference = get_post($referenceId);
+                    if ($reference instanceof \WP_Post && has_blocks($reference->post_content)) {
+                        $referenceBlocks = parse_blocks((string) $reference->post_content);
+                        if (is_array($referenceBlocks)) {
+                            $this->collectBlockListingScopes($referenceBlocks, $scopes, $visitedReferences);
+                        }
+                    }
+                }
+            }
+
+            if (!empty($block['innerBlocks']) && is_array($block['innerBlocks'])) {
+                $this->collectBlockListingScopes($block['innerBlocks'], $scopes, $visitedReferences);
+            }
+        }
+    }
+
+    private function collectElementorListingScopes(array $elements, array &$scopes): void
+    {
+        foreach ($elements as $element) {
+            $widgetType = sanitize_key((string) ($element['widgetType'] ?? $element['elType'] ?? ''));
+            $settings = isset($element['settings']) && is_array($element['settings']) ? $element['settings'] : array();
+            if (in_array($widgetType, array('posts', 'archive-posts', 'loop-grid'), true)) {
+                $postTypes = $settings['post_type'] ?? $settings['posts_post_type'] ?? 'post';
+                foreach (is_array($postTypes) ? $postTypes : array($postTypes) as $postType) {
+                    $scopes[] = sanitize_key((string) $postType) ?: 'post';
+                }
+            }
+            if (!empty($element['elements']) && is_array($element['elements'])) {
+                $this->collectElementorListingScopes($element['elements'], $scopes);
+            }
+        }
+    }
+
+    private function buildPostTypeListingGeneration(string $postType): array
+    {
+        static $cache = array();
+        $cacheKey = get_current_blog_id() . ':' . $postType;
+        if (isset($cache[$cacheKey])) {
+            return $cache[$cacheKey];
+        }
+
+        $query = new \WP_Query(array(
+            'post_type' => $postType,
+            'post_status' => 'publish',
+            'posts_per_page' => -1,
+            'orderby' => 'ID',
+            'order' => 'ASC',
+            'fields' => 'ids',
+            'no_found_rows' => true,
+            'ignore_sticky_posts' => true,
+            'update_post_meta_cache' => false,
+            'update_post_term_cache' => false,
+        ));
+        $stickyIds = array_values(array_unique(array_map('absint', (array) get_option('sticky_posts', array()))));
+        sort($stickyIds);
+        $items = array();
+        foreach ((array) $query->posts as $postId) {
+            $listedPost = get_post((int) $postId);
+            if (!($listedPost instanceof \WP_Post)) {
+                continue;
+            }
+            $termTaxonomyIds = wp_get_object_terms($listedPost->ID, get_object_taxonomies($postType), array('fields' => 'tt_ids'));
+            $termTaxonomyIds = is_wp_error($termTaxonomyIds) ? array() : array_values(array_map('absint', $termTaxonomyIds));
+            sort($termTaxonomyIds);
+            $items[] = array(
+                'id' => (int) $listedPost->ID,
+                'modifiedGmt' => (string) ($listedPost->post_modified_gmt ?: $listedPost->post_modified),
+                'publishedGmt' => (string) ($listedPost->post_date_gmt ?: $listedPost->post_date),
+                'menuOrder' => (int) $listedPost->menu_order,
+                'termTaxonomyIds' => $termTaxonomyIds,
+            );
+        }
+
+        $payload = array(
+            'postType' => $postType,
+            'items' => $items,
+            'stickyPostIds' => $postType === 'post' ? $stickyIds : array(),
+        );
+        $cache[$cacheKey] = array(
+            'count' => count($items),
+            'fingerprint' => hash('sha256', (string) wp_json_encode($payload)),
+        );
+        return $cache[$cacheKey];
     }
 
     private function resolveTrackedRouteForUrl(string $url): ?array
@@ -3351,6 +3757,14 @@ final class Plugin
             'auditEvents' => trailingslashit($runtime) . 'audit-events.jsonl',
             'queueRunnerHeartbeat' => trailingslashit($runtime) . 'queue-runner-heartbeat.json',
             'deployDiff' => trailingslashit($runtime) . 'deploy-diff.json',
+            'contentSyncState' => trailingslashit($runtime) . 'content-sync-state.json',
+            'contentSyncCurrent' => trailingslashit($runtime) . 'content-sync-current.json',
+            'contentSyncImpactPlan' => trailingslashit($runtime) . 'content-sync-impact-plan.json',
+            'contentSyncCheckpoint' => trailingslashit($runtime) . 'content-sync-checkpoint.json',
+            'contentSyncBaseline' => trailingslashit($runtime) . 'content-sync-baseline.json',
+            'contentSyncCandidateManifest' => trailingslashit($runtime) . 'content-sync-candidate-manifest.json',
+            'contentSyncInvalidation' => trailingslashit($runtime) . 'content-sync-invalidation.json',
+            'deployPlan' => trailingslashit($runtime) . 'deploy-plan.json',
             'logs' => $logs,
         );
     }
@@ -3458,7 +3872,7 @@ final class Plugin
         }
 
         $status = strtolower(sanitize_text_field((string) ($entry['status'] ?? 'info')));
-        if (!in_array($status, array('info', 'success', 'failed', 'queued', 'running', 'stopped'), true)) {
+        if (!in_array($status, array('info', 'success', 'failed', 'queued', 'retry-wait', 'running', 'stopped'), true)) {
             $status = 'info';
         }
 

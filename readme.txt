@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.11
+Stable tag: 1.0.12
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -36,6 +36,7 @@ The Node.js exporter provides:
 * Asset capture from network + parsed sources
 * Separate concurrency for page rendering, asset downloads, and final rewrite
 * URL rewriting modes (absolute, root-relative, relative)
+* Resumable targeted content sync with archive, sitemap, and tombstone reconciliation
 * S3 upload and CloudFront invalidation
 * Detailed logging for crawl, deploy, and invalidate
 
@@ -82,7 +83,8 @@ The plugin package itself manages WordPress-side configuration, queue state, run
 
 Optional WP Suite Pro features are not required for the plugin to work. They are additional workflow, convenience, and team/enterprise publishing features. Examples may include:
 
-* Incremental crawl / incremental publish / scheduled workflows.
+* Incremental crawl / incremental publish and targeted content sync for Professional or Agency subscriptions.
+* Scheduled workflows and operational content-sync status.
 * Extra Deployment Targets and Scheduler Settings backed by linked WP Suite site configuration.
 * Additional team/workspace-oriented configuration features.
 
@@ -259,7 +261,8 @@ No. Scheduler rules are evaluated only when the external `publisher-exporter que
 Important details:
 * Scheduler only adds matching jobs to `runtime/queue.json`; the same runner tick or a later tick then processes them through the normal queue.
 * Recommended cadence is every 1 minute.
-* Supported scheduled commands are `publish`, `crawl`, `deploy`, `invalidate`, `retry-timeouts`, and `url`.
+* Supported scheduled commands are `publish`, `crawl`, `deploy`, `invalidate`, `retry-timeouts`, `url`, and Professional/Agency-only `content-sync`.
+* Content sync requires a successful normal publish baseline and processes only the configured post types, multisite scope, listings, archives, and sitemap surfaces.
 * The scheduler timezone field is currently informational for operations context; interval matching is based on elapsed minute buckets checked at each runner start.
 * If an equivalent queued or running job already exists for the same command, crawl mode, deployment profile, and URL, the rule is skipped for that interval bucket.
 
@@ -501,6 +504,15 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.0.12 =
+* Incremental publishing: Refresh singular listing pages containing Query Loops and complete archive pagination families when published membership, taxonomy assignments, or sticky state changes.
+* Targeted content sync: Add scheduler-driven, resumable publish/update/taxonomy/sticky/unpublish/delete processing with manifest-backed tombstones, archive and sitemap reconciliation, completed CloudFront invalidations, verification, and cursor acknowledgement.
+* Baseline safety: Require a verified normal publish after release, scope, or deployment-target changes and show actionable stale-baseline status in the admin.
+* Trash handling: Preserve the exact last public permalink across repeated trash/restore/trash transitions instead of leaking WordPress `__trashed` aliases into deployment plans.
+* Multisite: Add an opt-in full-network content-sync scope for same-origin path-based networks while keeping current-site-only tracking as the default; network tracking requires network activation.
+* Premium access: Require an active WP Suite Professional or Agency subscription for incremental publishing and targeted content sync.
+* Packaging: Include and verify the content-journal runtime in canonical plugin builds.
+
 = 1.0.11 =
 * Compatibility: Declared compatibility with WordPress 7.1.
 
@@ -551,6 +563,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.12 =
+Recommended for incremental exports containing Query Loops or paginated archives and for Professional or Agency sites using targeted content sync. Run one successful normal publish after upgrading to establish the required baseline. Multisite subsite tracking is opt-in and requires network activation.
 
 = 1.0.11 =
 Declares compatibility with WordPress 7.1.

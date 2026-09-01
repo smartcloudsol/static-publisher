@@ -12,6 +12,7 @@ import {
   Group,
   Loader,
   Modal,
+  MultiSelect,
   NavLink,
   PasswordInput,
   ScrollArea,
@@ -65,7 +66,8 @@ type JobCommand =
   | "deploy"
   | "invalidate"
   | "retry-timeouts"
-  | "url";
+  | "url"
+  | "content-sync";
 
 type ProConfigPatch = {
   scheduler?: unknown;
@@ -86,7 +88,9 @@ function getInitialProAccessStatus(): ProAccessStatus {
 
   return {
     isLinked: !!(accountId && siteId && siteKey),
-    hasSubscription: wpsuite?.siteSettings?.subscriber === true,
+    // Fail closed until the signed remote publisher configuration confirms
+    // an exact Professional or Agency subscription type.
+    hasSubscription: false,
   };
 }
 
@@ -110,6 +114,15 @@ type SchedulerRule = {
   crawlMode?: CrawlMode;
   deploymentProfile?: string;
   url?: string;
+  postTypes?: string[];
+  listingPaths?: string[];
+  includeSubsites?: boolean;
+  includePostTypeArchives?: boolean;
+  includeTaxonomyArchives?: boolean;
+  includeAuthorArchives?: boolean;
+  includeDateArchives?: boolean;
+  includePostsPage?: boolean;
+  includeSitemapChain?: boolean;
 };
 
 type AwsTempCreds = {
@@ -127,6 +140,92 @@ type QueueItem = {
   deploymentProfile?: string;
   url?: string;
   usesTempAwsCreds?: boolean;
+  ruleId?: string;
+  coalesceKey?: string;
+  attempt?: number;
+  nextAttemptAt?: string;
+  error?: string;
+  fromSequence?: number;
+  toSequence?: number;
+  consumerId?: string;
+};
+
+type ContentSyncPostTypeOption = {
+  slug: string;
+  label: string;
+  hasArchive: boolean;
+  hierarchical: boolean;
+  siteCount?: number;
+};
+
+type ContentSyncPostTypeResponse = {
+  items?: ContentSyncPostTypeOption[];
+  multisite?: boolean;
+  networkActive?: boolean;
+};
+
+type ContentSyncRuleState = {
+  ruleId?: string;
+  consumerId?: string;
+  coalesceKey?: string;
+  committedSequence?: number;
+  observedHeadSequence?: number;
+  lag?: number;
+  lastSuccessfulJobId?: string;
+  lastSuccessfulAt?: string;
+  trailingWorkDetected?: boolean;
+  retryAttempt?: number;
+  nextRetryAt?: string | null;
+  lastError?: string | null;
+  baselineStatus?: "ready" | "required";
+  baselineReason?: string | null;
+};
+
+type ContentSyncCurrent = {
+  jobId?: string;
+  ruleId?: string;
+  consumerId?: string;
+  coalesceKey?: string;
+  fromSequence?: number;
+  toSequence?: number;
+  phase?: string;
+  impactHash?: string | null;
+  startedAt?: string;
+  updatedAt?: string;
+};
+
+type ContentSyncCheckpoint = {
+  jobId?: string;
+  phase?: string;
+  completedItems?: number;
+  totalItems?: number;
+  attempt?: number;
+  updatedAt?: string;
+  details?: Record<string, unknown>;
+};
+
+type ContentSyncBaseline = {
+  ruleId?: string;
+  consumerId?: string;
+  coalesceKey?: string;
+  baselineId?: string;
+  deploymentProfile?: string;
+  committedSequence?: number;
+  releaseJobId?: string;
+  verifiedAt?: string;
+};
+
+type ContentSyncRuntimeState = {
+  state?: {
+    updatedAt?: string;
+    rules?: Record<string, ContentSyncRuleState>;
+  } | null;
+  current?: ContentSyncCurrent | null;
+  checkpoint?: ContentSyncCheckpoint | null;
+  baseline?: {
+    updatedAt?: string;
+    entries?: Record<string, ContentSyncBaseline>;
+  } | null;
 };
 
 type PublisherConfig = {
@@ -200,6 +299,11 @@ type StateResponse = {
     deploymentProfile?: string;
     status: string;
     createdAt: string;
+    ruleId?: string;
+    coalesceKey?: string;
+    attempt?: number;
+    nextAttemptAt?: string;
+    error?: string;
   } | null;
   currentProgress: {
     checkedAt?: string;
@@ -232,10 +336,20 @@ type StateResponse = {
     stopRequestedByLogin?: string;
     stopMode?: string;
     stoppedStep?: string;
+    ruleId?: string;
+    coalesceKey?: string;
+    attempt?: number;
+    nextAttemptAt?: string;
+    error?: string;
   } | null;
   schedulerState: {
     lastEnqueuedBucketByRuleId?: Record<string, number>;
+    lastEvaluatedBucketByRuleId?: Record<string, number>;
+    lastCreatedBucketByRuleId?: Record<string, number>;
+    coalescedCountByRuleId?: Record<string, number>;
   } | null;
+  queueRunnerHeartbeat?: Record<string, unknown> | null;
+  contentSync?: ContentSyncRuntimeState | null;
   deployDiff: {
     generatedAt?: string;
     mode?: string;
@@ -692,6 +806,83 @@ function formatJobCommandLabel(command: string, crawlMode?: CrawlMode): string {
   return command;
 }
 
+function defaultContentSyncScope(): Pick<
+  SchedulerRule,
+  | "postTypes"
+  | "listingPaths"
+  | "includeSubsites"
+  | "includePostTypeArchives"
+  | "includeTaxonomyArchives"
+  | "includeAuthorArchives"
+  | "includeDateArchives"
+  | "includePostsPage"
+  | "includeSitemapChain"
+> {
+  return {
+    postTypes: [],
+    listingPaths: [],
+    includeSubsites: false,
+    includePostTypeArchives: true,
+    includeTaxonomyArchives: true,
+    includeAuthorArchives: false,
+    includeDateArchives: false,
+    includePostsPage: true,
+    includeSitemapChain: true,
+  };
+}
+
+function normalizeContentSyncListingPaths(values: string[]): string[] {
+  return [
+    ...new Set(
+      values
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .map((value) => {
+          if (/^https?:\/\//i.test(value)) {
+            throw new Error(
+              "Content-sync listing routes must be site-relative paths.",
+            );
+          }
+          const path = `/${value.replace(/^\/+|\/+$/g, "")}`;
+          return path === "/" ? "/" : `${path}/`;
+        }),
+    ),
+  ];
+}
+
+function summarizeSchedulerScope(rule: SchedulerRule): string {
+  if (rule.command !== "content-sync") {
+    return rule.url || "-";
+  }
+
+  const postTypes = rule.postTypes ?? [];
+  const listingCount = rule.listingPaths?.length ?? 0;
+  const archiveFamilies = [
+    rule.includeSubsites === true ? "multisite network" : "current site",
+    rule.includePostTypeArchives !== false ? "post type" : "",
+    rule.includeTaxonomyArchives !== false ? "taxonomy" : "",
+    rule.includeAuthorArchives === true ? "author" : "",
+    rule.includeDateArchives === true ? "date" : "",
+    rule.includePostsPage !== false ? "posts page" : "",
+    rule.includeSitemapChain !== false ? "sitemap" : "",
+  ].filter(Boolean);
+
+  return `${
+    postTypes.join(", ") || "no post types"
+  }; ${listingCount} listing route${listingCount === 1 ? "" : "s"}; ${
+    archiveFamilies.join(", ") || "no archive families"
+  }`;
+}
+
+function formatAuditDetails(
+  details: Record<string, unknown> | undefined,
+): string {
+  if (!details || Object.keys(details).length === 0) {
+    return "";
+  }
+  return JSON.stringify(details, null, 2);
+}
+
 function formatSchedulerLastEnqueue(
   rule: SchedulerRule,
   bucket: unknown,
@@ -730,7 +921,8 @@ function parseSchedulerRules(input: string): SchedulerRule[] {
         command !== "deploy" &&
         command !== "invalidate" &&
         command !== "retry-timeouts" &&
-        command !== "url"
+        command !== "url" &&
+        command !== "content-sync"
       ) {
         throw new Error(`Invalid scheduler command at row ${index + 1}.`);
       }
@@ -743,6 +935,20 @@ function parseSchedulerRules(input: string): SchedulerRule[] {
 
       const url = String(row.url ?? "").trim();
       const deploymentProfile = String(row.deploymentProfile ?? "").trim();
+      const postTypes = Array.isArray(row.postTypes)
+        ? [
+            ...new Set(
+              row.postTypes
+                .map((value) => String(value).trim())
+                .filter(Boolean),
+            ),
+          ]
+        : [];
+      const listingPaths = Array.isArray(row.listingPaths)
+        ? normalizeContentSyncListingPaths(
+            row.listingPaths.map((value) => String(value)),
+          )
+        : [];
       const crawlMode =
         (command === "publish" || command === "crawl") &&
         row.crawlMode === "incremental"
@@ -750,6 +956,13 @@ function parseSchedulerRules(input: string): SchedulerRule[] {
           : "full";
       if (command === "url" && !url) {
         throw new Error(`URL is required for scheduler row ${index + 1}.`);
+      }
+      if (command === "content-sync" && postTypes.length === 0) {
+        throw new Error(
+          `At least one post type is required for content-sync scheduler row ${
+            index + 1
+          }.`,
+        );
       }
 
       return {
@@ -760,11 +973,26 @@ function parseSchedulerRules(input: string): SchedulerRule[] {
         ...(command === "publish" || command === "crawl" ? { crawlMode } : {}),
         ...((command === "publish" ||
           command === "deploy" ||
-          command === "invalidate") &&
+          command === "invalidate" ||
+          command === "content-sync") &&
         deploymentProfile
           ? { deploymentProfile }
           : {}),
         ...(url ? { url } : {}),
+        ...(command === "content-sync"
+          ? {
+              ...defaultContentSyncScope(),
+              postTypes,
+              listingPaths,
+              includeSubsites: row.includeSubsites === true,
+              includePostTypeArchives: row.includePostTypeArchives !== false,
+              includeTaxonomyArchives: row.includeTaxonomyArchives !== false,
+              includeAuthorArchives: row.includeAuthorArchives === true,
+              includeDateArchives: row.includeDateArchives === true,
+              includePostsPage: row.includePostsPage !== false,
+              includeSitemapChain: row.includeSitemapChain !== false,
+            }
+          : {}),
       } as SchedulerRule;
     })
     .filter(Boolean);
@@ -1556,6 +1784,14 @@ export default function Main({ store }: MainProps) {
   const [deploymentProfileDraft, setDeploymentProfileDraft] =
     useState<DeploymentProfileDraft>(createDeploymentProfileDraft());
   const [schedulerRuleModalOpen, setSchedulerRuleModalOpen] = useState(false);
+  const [contentSyncPostTypes, setContentSyncPostTypes] = useState<
+    ContentSyncPostTypeOption[]
+  >([]);
+  const [contentSyncMultisite, setContentSyncMultisite] = useState(false);
+  const [contentSyncNetworkActive, setContentSyncNetworkActive] =
+    useState(false);
+  const [contentSyncPostTypesLoading, setContentSyncPostTypesLoading] =
+    useState(false);
   const [editingSchedulerRuleIndex, setEditingSchedulerRuleIndex] = useState<
     number | null
   >(null);
@@ -1567,6 +1803,7 @@ export default function Main({ store }: MainProps) {
     crawlMode: "full",
     deploymentProfile: "",
     url: "",
+    ...defaultContentSyncScope(),
   });
   const [scrollToId, setScrollToId] = useState<string>("");
   const [docOpened, { open: openDoc, close: closeDoc }] = useDisclosure(false);
@@ -1596,6 +1833,7 @@ export default function Main({ store }: MainProps) {
       crawlMode: getDefaultCrawlMode(hasIncrementalAccess),
       deploymentProfile: "",
       url: "",
+      ...defaultContentSyncScope(),
     });
     setSchedulerRuleModalOpen(true);
   };
@@ -1753,6 +1991,7 @@ export default function Main({ store }: MainProps) {
     }
     setEditingSchedulerRuleIndex(index);
     setSchedulerRuleDraft({
+      ...(rule.command === "content-sync" ? defaultContentSyncScope() : {}),
       ...rule,
       crawlMode: rule.crawlMode ?? getDefaultCrawlMode(hasIncrementalAccess),
       url: rule.url ?? "",
@@ -1782,11 +2021,26 @@ export default function Main({ store }: MainProps) {
     const commandSupportsDeploymentProfile =
       schedulerRuleDraft.command === "publish" ||
       schedulerRuleDraft.command === "deploy" ||
-      schedulerRuleDraft.command === "invalidate";
+      schedulerRuleDraft.command === "invalidate" ||
+      schedulerRuleDraft.command === "content-sync";
+    const isContentSync = schedulerRuleDraft.command === "content-sync";
     const normalizedCrawlMode =
       commandSupportsCrawlMode && schedulerRuleDraft.crawlMode === "incremental"
         ? "incremental"
         : "full";
+
+    if (isContentSync && !hasIncrementalAccess) {
+      notifications.show({
+        title: __("Active subscription required", TEXT_DOMAIN),
+        message: __(
+          "Content sync requires a Premium build and an active Professional or Agency subscription.",
+          TEXT_DOMAIN,
+        ),
+        color: "yellow",
+        icon: <IconAlertCircle size={16} />,
+      });
+      return;
+    }
 
     if (!normalizedId) {
       notifications.show({
@@ -1828,6 +2082,41 @@ export default function Main({ store }: MainProps) {
       return;
     }
 
+    const normalizedPostTypes = [
+      ...new Set(
+        (schedulerRuleDraft.postTypes ?? [])
+          .map((value) => value.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    ];
+    let normalizedListingPaths: string[];
+    try {
+      normalizedListingPaths = normalizeContentSyncListingPaths(
+        schedulerRuleDraft.listingPaths ?? [],
+      );
+    } catch (error) {
+      notifications.show({
+        title: __("Scheduler rule validation", TEXT_DOMAIN),
+        message: (error as Error).message,
+        color: "red",
+        icon: <IconAlertCircle size={16} />,
+      });
+      return;
+    }
+
+    if (isContentSync && normalizedPostTypes.length === 0) {
+      notifications.show({
+        title: __("Scheduler rule validation", TEXT_DOMAIN),
+        message: __(
+          "Select at least one public post type for content sync.",
+          TEXT_DOMAIN,
+        ),
+        color: "red",
+        icon: <IconAlertCircle size={16} />,
+      });
+      return;
+    }
+
     if (
       commandSupportsDeploymentProfile &&
       normalizedDeploymentProfile &&
@@ -1858,7 +2147,46 @@ export default function Main({ store }: MainProps) {
       ...(schedulerRuleDraft.command === "url" && normalizedUrl
         ? { url: normalizedUrl }
         : {}),
+      ...(isContentSync
+        ? {
+            postTypes: normalizedPostTypes,
+            listingPaths: normalizedListingPaths,
+            includeSubsites: schedulerRuleDraft.includeSubsites === true,
+            includePostTypeArchives:
+              schedulerRuleDraft.includePostTypeArchives !== false,
+            includeTaxonomyArchives:
+              schedulerRuleDraft.includeTaxonomyArchives !== false,
+            includeAuthorArchives:
+              schedulerRuleDraft.includeAuthorArchives === true,
+            includeDateArchives:
+              schedulerRuleDraft.includeDateArchives === true,
+            includePostsPage: schedulerRuleDraft.includePostsPage !== false,
+            includeSitemapChain:
+              schedulerRuleDraft.includeSitemapChain !== false,
+          }
+        : {}),
     };
+
+    if (!commandSupportsCrawlMode) {
+      delete nextRule.crawlMode;
+    }
+    if (!commandSupportsDeploymentProfile || !normalizedDeploymentProfile) {
+      delete nextRule.deploymentProfile;
+    }
+    if (schedulerRuleDraft.command !== "url") {
+      delete nextRule.url;
+    }
+    if (!isContentSync) {
+      delete nextRule.postTypes;
+      delete nextRule.listingPaths;
+      delete nextRule.includeSubsites;
+      delete nextRule.includePostTypeArchives;
+      delete nextRule.includeTaxonomyArchives;
+      delete nextRule.includeAuthorArchives;
+      delete nextRule.includeDateArchives;
+      delete nextRule.includePostsPage;
+      delete nextRule.includeSitemapChain;
+    }
 
     setConfig((prev) => {
       const currentRules = [...prev.scheduler.rules];
@@ -2153,6 +2481,39 @@ export default function Main({ store }: MainProps) {
     }
   };
 
+  const loadContentSyncPostTypes = async () => {
+    if (!boot || !IS_PREMIUM_BUILD) {
+      return;
+    }
+
+    setContentSyncPostTypesLoading(true);
+    try {
+      const data = await restRequest<ContentSyncPostTypeResponse>(
+        boot,
+        "/content-sync/post-types",
+        { method: "GET" },
+      );
+      setContentSyncPostTypes(
+        Array.isArray(data.items)
+          ? data.items.filter(
+              (item) =>
+                typeof item?.slug === "string" &&
+                item.slug.trim() !== "" &&
+                typeof item?.label === "string",
+            )
+          : [],
+      );
+      setContentSyncMultisite(data.multisite === true);
+      setContentSyncNetworkActive(data.networkActive === true);
+    } catch {
+      setContentSyncPostTypes([]);
+      setContentSyncMultisite(false);
+      setContentSyncNetworkActive(false);
+    } finally {
+      setContentSyncPostTypesLoading(false);
+    }
+  };
+
   const loadState = async (options?: LoadStateOptions) => {
     const showGlobalLoader = options?.showGlobalLoader ?? false;
     const syncConfig = options?.syncConfig ?? false;
@@ -2227,6 +2588,7 @@ export default function Main({ store }: MainProps) {
       await reloadConfig(store);
       hydrateStoreProConfig();
       await refreshProAccessStatus();
+      await loadContentSyncPostTypes();
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -2326,7 +2688,9 @@ export default function Main({ store }: MainProps) {
   };
 
   const currentStep = String(
-    state?.currentProgress?.currentStep || state?.currentCrawlEvent?.currentStep || "",
+    state?.currentProgress?.currentStep ||
+      state?.currentCrawlEvent?.currentStep ||
+      "",
   ).trim();
   const stableCurrentProgress = buildStableCurrentProgress(
     currentStep,
@@ -2374,7 +2738,21 @@ export default function Main({ store }: MainProps) {
   const deployDiffSummary = state?.deployDiff?.summary;
   const schedulerRuleCount = config.scheduler.rules.length;
   const schedulerBuckets =
-    state?.schedulerState?.lastEnqueuedBucketByRuleId ?? {};
+    state?.schedulerState?.lastEvaluatedBucketByRuleId ??
+    state?.schedulerState?.lastEnqueuedBucketByRuleId ??
+    {};
+  const schedulerCoalescedCounts =
+    state?.schedulerState?.coalescedCountByRuleId ?? {};
+  const contentSyncRuntime = state?.contentSync ?? null;
+  const contentSyncRuleStates = Object.values(
+    contentSyncRuntime?.state?.rules ?? {},
+  );
+  const contentSyncBaselines = contentSyncRuntime?.baseline?.entries ?? {};
+  const currentContentSync = contentSyncRuntime?.current ?? null;
+  const contentSyncCheckpoint = contentSyncRuntime?.checkpoint ?? null;
+  const queueRunnerStatus = String(
+    state?.queueRunnerHeartbeat?.status ?? "",
+  ).trim();
   const deploymentProfiles = useMemo(
     () => normalizeDeploymentProfileMap(config.deploymentProfiles),
     [config.deploymentProfiles],
@@ -2432,6 +2810,20 @@ export default function Main({ store }: MainProps) {
 
     return options;
   }, [deploymentProfileOptions, schedulerRuleDraft.deploymentProfile]);
+  const contentSyncPostTypeSelectOptions = useMemo(() => {
+    const options = contentSyncPostTypes.map((item) => ({
+      value: item.slug,
+      label: item.hasArchive
+        ? `${item.label} (${item.slug}, archive)`
+        : `${item.label} (${item.slug})`,
+    }));
+    for (const slug of schedulerRuleDraft.postTypes ?? []) {
+      if (!options.some((option) => option.value === slug)) {
+        options.push({ value: slug, label: `${slug} (unavailable)` });
+      }
+    }
+    return options;
+  }, [contentSyncPostTypes, schedulerRuleDraft.postTypes]);
   const navPrimary: Array<{
     value: AdminTab;
     label: string;
@@ -2571,11 +2963,15 @@ export default function Main({ store }: MainProps) {
   };
 
   const saveSchedulerConfig = async () => {
-    if (!IS_PREMIUM_BUILD || !proAccess.isLinked) {
+    if (
+      !IS_PREMIUM_BUILD ||
+      !proAccess.isLinked ||
+      !proAccess.hasSubscription
+    ) {
       notifications.show({
-        title: __("WPSuite connection required", TEXT_DOMAIN),
+        title: __("Active subscription required", TEXT_DOMAIN),
         message: __(
-          "Connect this site to wpsuite.io before saving PRO scheduler settings.",
+          "Connect this site to wpsuite.io with an active Professional or Agency subscription before saving PRO scheduler settings.",
           TEXT_DOMAIN,
         ),
         color: "yellow",
@@ -4144,6 +4540,27 @@ export default function Main({ store }: MainProps) {
                                       {`profile: ${state.currentRun.deploymentProfile}`}
                                     </Badge>
                                   )}
+                                  {state.currentRun.ruleId && (
+                                    <Badge
+                                      color="violet"
+                                      variant="light"
+                                      size="sm"
+                                    >
+                                      {`rule: ${state.currentRun.ruleId}`}
+                                    </Badge>
+                                  )}
+                                  {state.currentRun.command ===
+                                    "content-sync" && (
+                                    <Badge
+                                      color="orange"
+                                      variant="light"
+                                      size="sm"
+                                    >
+                                      {`attempt: ${
+                                        state.currentRun.attempt ?? 0
+                                      }`}
+                                    </Badge>
+                                  )}
                                 </Group>
                                 <Text size="sm" c="dimmed">
                                   {__("Queued at", TEXT_DOMAIN)}:{" "}
@@ -4163,6 +4580,18 @@ export default function Main({ store }: MainProps) {
                                     {currentProgressMessage}
                                   </Text>
                                 )}
+                                {state.currentRun.command === "content-sync" &&
+                                  currentContentSync && (
+                                    <Text size="sm">
+                                      {__("Claimed journal range", TEXT_DOMAIN)}
+                                      :{" "}
+                                      <Code>{`(${
+                                        currentContentSync.fromSequence ?? 0
+                                      }, ${
+                                        currentContentSync.toSequence ?? 0
+                                      }]`}</Code>
+                                    </Text>
+                                  )}
                                 {currentProgressDetails !== "" && (
                                   <Text size="xs" c="dimmed" ff="monospace">
                                     {currentProgressDetails}
@@ -4364,10 +4793,44 @@ export default function Main({ store }: MainProps) {
                                           {__("temp AWS creds", TEXT_DOMAIN)}
                                         </Badge>
                                       )}
+                                      {item.ruleId && (
+                                        <Badge
+                                          color="violet"
+                                          variant="light"
+                                          size="sm"
+                                        >
+                                          {`rule: ${item.ruleId}`}
+                                        </Badge>
+                                      )}
+                                      {item.command === "content-sync" && (
+                                        <Badge
+                                          color="orange"
+                                          variant="light"
+                                          size="sm"
+                                        >
+                                          {`attempt: ${item.attempt ?? 0}`}
+                                        </Badge>
+                                      )}
                                     </Group>
                                     {item.url && (
                                       <Text size="xs" ff="monospace" c="dimmed">
                                         {item.url}
+                                      </Text>
+                                    )}
+                                    {item.coalesceKey && (
+                                      <Text size="xs" ff="monospace" c="dimmed">
+                                        {item.coalesceKey}
+                                      </Text>
+                                    )}
+                                    {item.nextAttemptAt && (
+                                      <Text size="xs" c="dimmed">
+                                        {__("Next retry", TEXT_DOMAIN)}:{" "}
+                                        {item.nextAttemptAt}
+                                      </Text>
+                                    )}
+                                    {item.error && (
+                                      <Text size="xs" c="red">
+                                        {item.error}
                                       </Text>
                                     )}
                                   </Stack>
@@ -4797,6 +5260,222 @@ export default function Main({ store }: MainProps) {
                           )}
                         </Text>
                       </Alert>
+                      {config.scheduler.rules.some(
+                        (rule) => rule.command === "content-sync",
+                      ) && (
+                        <Alert color="yellow" variant="light">
+                          <Text fw={600} size="sm">
+                            {__("Content-sync baseline safety", TEXT_DOMAIN)}
+                          </Text>
+                          <Text size="sm">
+                            {__(
+                              "A successful full or incremental publish must establish a verified baseline before targeted content sync can deploy. Theme, plugin, permalink, sitemap, rewrite, scope, or deployment-target changes require a new normal publish.",
+                              TEXT_DOMAIN,
+                            )}
+                          </Text>
+                        </Alert>
+                      )}
+                      <Card withBorder radius="sm" padding="md">
+                        <Group justify="space-between" mb="sm">
+                          <Text fw={600}>
+                            {__("Content-sync operations", TEXT_DOMAIN)}
+                          </Text>
+                          <Group gap="xs">
+                            <Badge
+                              color={
+                                queueRunnerStatus === "error"
+                                  ? "red"
+                                  : queueRunnerStatus
+                                  ? "blue"
+                                  : "gray"
+                              }
+                              variant="light"
+                            >
+                              {queueRunnerStatus ||
+                                __("runner unknown", TEXT_DOMAIN)}
+                            </Badge>
+                            {contentSyncRuntime?.state?.updatedAt && (
+                              <Text size="xs" c="dimmed">
+                                {contentSyncRuntime.state.updatedAt}
+                              </Text>
+                            )}
+                          </Group>
+                        </Group>
+                        {!currentContentSync &&
+                        contentSyncRuleStates.length === 0 ? (
+                          <Alert color="gray" variant="light">
+                            <Text size="sm">
+                              {__(
+                                "No content-sync runtime state has been recorded yet. Save a content-sync rule and run a normal publish to establish its baseline.",
+                                TEXT_DOMAIN,
+                              )}
+                            </Text>
+                          </Alert>
+                        ) : (
+                          <Stack gap="sm">
+                            {currentContentSync && (
+                              <Alert color="blue" variant="light">
+                                <Stack gap={4}>
+                                  <Group gap="xs">
+                                    <Text fw={600} size="sm">
+                                      {__("Running cutoff", TEXT_DOMAIN)}
+                                    </Text>
+                                    <Badge variant="light">
+                                      {currentContentSync.phase ||
+                                        __("claimed", TEXT_DOMAIN)}
+                                    </Badge>
+                                    <Code>{`(${
+                                      currentContentSync.fromSequence ?? 0
+                                    }, ${
+                                      currentContentSync.toSequence ?? 0
+                                    }]`}</Code>
+                                  </Group>
+                                  <Text size="xs" ff="monospace">
+                                    {currentContentSync.ruleId || "-"} /{" "}
+                                    {currentContentSync.consumerId || "-"}
+                                  </Text>
+                                  {contentSyncCheckpoint && (
+                                    <Text size="sm">
+                                      {__("Checkpoint", TEXT_DOMAIN)}:{" "}
+                                      {contentSyncCheckpoint.phase || "-"} -{" "}
+                                      {contentSyncCheckpoint.completedItems ??
+                                        0}
+                                      /{contentSyncCheckpoint.totalItems ?? 0} (
+                                      {__("attempt", TEXT_DOMAIN)}{" "}
+                                      {contentSyncCheckpoint.attempt ?? 0})
+                                    </Text>
+                                  )}
+                                  {contentSyncCheckpoint?.details &&
+                                    Object.keys(contentSyncCheckpoint.details)
+                                      .length > 0 && (
+                                      <Code block>
+                                        {formatAuditDetails(
+                                          contentSyncCheckpoint.details,
+                                        )}
+                                      </Code>
+                                    )}
+                                </Stack>
+                              </Alert>
+                            )}
+                            {contentSyncRuleStates.map((ruleState, index) => {
+                              const key =
+                                ruleState.coalesceKey ||
+                                `${ruleState.ruleId || "rule"}-${index}`;
+                              const baseline = ruleState.coalesceKey
+                                ? contentSyncBaselines[ruleState.coalesceKey]
+                                : undefined;
+                              const baselineReady =
+                                !!baseline &&
+                                ruleState.baselineStatus !== "required";
+                              const lag =
+                                ruleState.lag ??
+                                Math.max(
+                                  0,
+                                  (ruleState.observedHeadSequence ?? 0) -
+                                    (ruleState.committedSequence ?? 0),
+                                );
+                              return (
+                                <Box
+                                  key={key}
+                                  p="sm"
+                                  style={{
+                                    border: "1px solid #dee2e6",
+                                    borderRadius: 8,
+                                  }}
+                                >
+                                  <Group
+                                    justify="space-between"
+                                    align="flex-start"
+                                  >
+                                    <Stack gap={3}>
+                                      <Group gap="xs">
+                                        <Code>{ruleState.ruleId || "-"}</Code>
+                                        <Badge
+                                          color={lag > 0 ? "yellow" : "green"}
+                                          variant="light"
+                                        >
+                                          {__("lag", TEXT_DOMAIN)}: {lag}
+                                        </Badge>
+                                        <Badge
+                                          color={
+                                            baselineReady ? "green" : "red"
+                                          }
+                                          variant="light"
+                                        >
+                                          {baselineReady
+                                            ? __("baseline ready", TEXT_DOMAIN)
+                                            : __(
+                                                ruleState.baselineStatus ===
+                                                  "required"
+                                                  ? "baseline stale"
+                                                  : "baseline required",
+                                                TEXT_DOMAIN,
+                                              )}
+                                        </Badge>
+                                        {ruleState.trailingWorkDetected && (
+                                          <Badge color="orange" variant="light">
+                                            {__("trailing work", TEXT_DOMAIN)}
+                                          </Badge>
+                                        )}
+                                      </Group>
+                                      <Text size="sm">
+                                        {__("Committed", TEXT_DOMAIN)}:{" "}
+                                        {ruleState.committedSequence ?? 0} |{" "}
+                                        {__("Observed", TEXT_DOMAIN)}:{" "}
+                                        {ruleState.observedHeadSequence ?? 0}
+                                      </Text>
+                                      <Text size="xs" c="dimmed" ff="monospace">
+                                        {ruleState.consumerId || "-"}
+                                      </Text>
+                                      {baseline && (
+                                        <Text size="xs" c="dimmed">
+                                          {__("Baseline verified", TEXT_DOMAIN)}
+                                          : {baseline.verifiedAt || "-"}
+                                        </Text>
+                                      )}
+                                      {ruleState.baselineStatus ===
+                                        "required" && (
+                                        <Alert color="red" variant="light">
+                                          <Text fw={600} size="sm">
+                                            {__(
+                                              "New baseline required",
+                                              TEXT_DOMAIN,
+                                            )}
+                                          </Text>
+                                          <Text size="sm">
+                                            {ruleState.baselineReason ||
+                                              __(
+                                                "The active release changed. Queue a successful full or incremental publish before content sync can resume.",
+                                                TEXT_DOMAIN,
+                                              )}
+                                          </Text>
+                                        </Alert>
+                                      )}
+                                    </Stack>
+                                    <Stack gap={3} align="flex-end">
+                                      <Text size="xs">
+                                        {__("Retry attempt", TEXT_DOMAIN)}:{" "}
+                                        {ruleState.retryAttempt ?? 0}
+                                      </Text>
+                                      {ruleState.nextRetryAt && (
+                                        <Text size="xs" c="dimmed">
+                                          {__("Next retry", TEXT_DOMAIN)}:{" "}
+                                          {ruleState.nextRetryAt}
+                                        </Text>
+                                      )}
+                                      {ruleState.lastError && (
+                                        <Text size="xs" c="red">
+                                          {ruleState.lastError}
+                                        </Text>
+                                      )}
+                                    </Stack>
+                                  </Group>
+                                </Box>
+                              );
+                            })}
+                          </Stack>
+                        )}
+                      </Card>
                       <Stack gap="xs">
                         <Group justify="space-between" align="center">
                           <Text fw={600}>
@@ -4839,9 +5518,9 @@ export default function Main({ store }: MainProps) {
                                   {__("Interval", TEXT_DOMAIN)}
                                 </Table.Th>
                                 <Table.Th>
-                                  {__("Last auto-enqueue", TEXT_DOMAIN)}
+                                  {__("Last evaluation", TEXT_DOMAIN)}
                                 </Table.Th>
-                                <Table.Th>{__("URL", TEXT_DOMAIN)}</Table.Th>
+                                <Table.Th>{__("Scope", TEXT_DOMAIN)}</Table.Th>
                                 <Table.Th>
                                   {__("Enabled", TEXT_DOMAIN)}
                                 </Table.Th>
@@ -4863,19 +5542,35 @@ export default function Main({ store }: MainProps) {
                                   <Table.Td>
                                     {rule.command === "publish" ||
                                     rule.command === "deploy" ||
-                                    rule.command === "invalidate"
+                                    rule.command === "invalidate" ||
+                                    rule.command === "content-sync"
                                       ? rule.deploymentProfile ||
                                         __("base target", TEXT_DOMAIN)
                                       : "-"}
                                   </Table.Td>
                                   <Table.Td>{`${rule.intervalMinutes}m`}</Table.Td>
                                   <Table.Td>
-                                    {formatSchedulerLastEnqueue(
-                                      rule,
-                                      schedulerBuckets[rule.id],
-                                    )}
+                                    <Stack gap={2}>
+                                      <Text size="sm">
+                                        {formatSchedulerLastEnqueue(
+                                          rule,
+                                          schedulerBuckets[rule.id],
+                                        )}
+                                      </Text>
+                                      {rule.command === "content-sync" && (
+                                        <Text size="xs" c="dimmed">
+                                          {__("Coalesced", TEXT_DOMAIN)}:{" "}
+                                          {schedulerCoalescedCounts[rule.id] ??
+                                            0}
+                                        </Text>
+                                      )}
+                                    </Stack>
                                   </Table.Td>
-                                  <Table.Td>{rule.url || "-"}</Table.Td>
+                                  <Table.Td>
+                                    <Text size="xs">
+                                      {summarizeSchedulerScope(rule)}
+                                    </Text>
+                                  </Table.Td>
                                   <Table.Td>
                                     <Badge
                                       color={rule.enabled ? "green" : "gray"}
@@ -5155,6 +5850,54 @@ export default function Main({ store }: MainProps) {
                               value: "queue-runner-error",
                               label: "queue-runner-error",
                             },
+                            {
+                              value: "content-sync-demand-detected",
+                              label: "content-sync-demand-detected",
+                            },
+                            {
+                              value: "content-sync-coalesced",
+                              label: "content-sync-coalesced",
+                            },
+                            {
+                              value: "content-sync-range-claimed",
+                              label: "content-sync-range-claimed",
+                            },
+                            {
+                              value: "content-sync-baseline-established",
+                              label: "content-sync-baseline-established",
+                            },
+                            {
+                              value: "content-sync-baseline-rejected",
+                              label: "content-sync-baseline-rejected",
+                            },
+                            {
+                              value: "content-sync-impact-planned",
+                              label: "content-sync-impact-planned",
+                            },
+                            {
+                              value: "content-sync-checkpoint",
+                              label: "content-sync-checkpoint",
+                            },
+                            {
+                              value: "content-sync-deployed",
+                              label: "content-sync-deployed",
+                            },
+                            {
+                              value: "content-sync-cursor-acknowledged",
+                              label: "content-sync-cursor-acknowledged",
+                            },
+                            {
+                              value: "content-sync-trailing-job-created",
+                              label: "content-sync-trailing-job-created",
+                            },
+                            {
+                              value: "content-sync-retry-scheduled",
+                              label: "content-sync-retry-scheduled",
+                            },
+                            {
+                              value: "content-sync-failed",
+                              label: "content-sync-failed",
+                            },
                           ]}
                         />
                         <Select
@@ -5171,6 +5914,7 @@ export default function Main({ store }: MainProps) {
                             { value: "stopped", label: "stopped" },
                             { value: "success", label: "success" },
                             { value: "failed", label: "failed" },
+                            { value: "retry-wait", label: "retry-wait" },
                             { value: "info", label: "info" },
                           ]}
                         />
@@ -5249,6 +5993,8 @@ export default function Main({ store }: MainProps) {
                                           ? "blue"
                                           : entry.status === "queued"
                                           ? "gray"
+                                          : entry.status === "retry-wait"
+                                          ? "orange"
                                           : "dark"
                                       }
                                       variant="light"
@@ -5277,6 +6023,11 @@ export default function Main({ store }: MainProps) {
                                       <Text size="sm">
                                         {entry.message || ""}
                                       </Text>
+                                      {formatAuditDetails(entry.details) && (
+                                        <Code block>
+                                          {formatAuditDetails(entry.details)}
+                                        </Code>
+                                      )}
                                       {entry.artifacts &&
                                       entry.artifacts.length > 0 ? (
                                         <Stack gap="xs">
@@ -5391,6 +6142,11 @@ export default function Main({ store }: MainProps) {
               { value: "invalidate", label: "invalidate" },
               { value: "retry-timeouts", label: "retry-timeouts" },
               { value: "url", label: "url" },
+              {
+                value: "content-sync",
+                label: "content-sync",
+                disabled: !hasIncrementalAccess,
+              },
             ]}
             onChange={(value) => {
               if (!value) {
@@ -5402,9 +6158,13 @@ export default function Main({ store }: MainProps) {
                   nextCommand === "publish" || nextCommand === "crawl";
                 const previousCommandSupportsCrawlMode =
                   prev.command === "publish" || prev.command === "crawl";
+                const enteringContentSync =
+                  nextCommand === "content-sync" &&
+                  prev.command !== "content-sync";
 
                 return {
                   ...prev,
+                  ...(enteringContentSync ? defaultContentSyncScope() : {}),
                   command: nextCommand,
                   ...(nextCommandSupportsCrawlMode
                     ? previousCommandSupportsCrawlMode
@@ -5413,7 +6173,8 @@ export default function Main({ store }: MainProps) {
                     : { crawlMode: defaultCrawlMode }),
                   ...(nextCommand === "publish" ||
                   nextCommand === "deploy" ||
-                  nextCommand === "invalidate"
+                  nextCommand === "invalidate" ||
+                  nextCommand === "content-sync"
                     ? {}
                     : { deploymentProfile: "" }),
                   ...(nextCommand === "url" ? {} : { url: "" }),
@@ -5449,7 +6210,8 @@ export default function Main({ store }: MainProps) {
 
           {(schedulerRuleDraft.command === "publish" ||
             schedulerRuleDraft.command === "deploy" ||
-            schedulerRuleDraft.command === "invalidate") && (
+            schedulerRuleDraft.command === "invalidate" ||
+            schedulerRuleDraft.command === "content-sync") && (
             <Select
               label={__("Deployment profile", TEXT_DOMAIN)}
               value={
@@ -5476,6 +6238,114 @@ export default function Main({ store }: MainProps) {
                 }))
               }
             />
+          )}
+
+          {schedulerRuleDraft.command === "content-sync" && (
+            <Stack gap="sm">
+              <Alert color="yellow" variant="light">
+                <Text size="sm">
+                  {__(
+                    "Content sync is subscription-gated and scheduler-only. A successful normal publish must establish a trusted baseline before this rule can deploy targeted changes.",
+                    TEXT_DOMAIN,
+                  )}
+                </Text>
+              </Alert>
+              <MultiSelect
+                label={__("Public post types", TEXT_DOMAIN)}
+                description={__(
+                  "Select at least one public, publicly queryable post type with stable permalinks.",
+                  TEXT_DOMAIN,
+                )}
+                data={contentSyncPostTypeSelectOptions}
+                value={schedulerRuleDraft.postTypes ?? []}
+                searchable
+                required
+                disabled={!hasIncrementalAccess}
+                rightSection={
+                  contentSyncPostTypesLoading ? <Loader size="xs" /> : undefined
+                }
+                onChange={(value) =>
+                  setSchedulerRuleDraft((prev) => ({
+                    ...prev,
+                    postTypes: value,
+                  }))
+                }
+              />
+              <Textarea
+                label={__("Explicit listing routes", TEXT_DOMAIN)}
+                description={__(
+                  "Optional site-relative routes, one per line, for Query Loop or other listing pages that WordPress cannot infer reliably.",
+                  TEXT_DOMAIN,
+                )}
+                placeholder={"/\n/insights/"}
+                minRows={3}
+                value={linesText(schedulerRuleDraft.listingPaths)}
+                onChange={(event) =>
+                  setSchedulerRuleDraft((prev) => ({
+                    ...prev,
+                    listingPaths: parseLines(event.currentTarget.value),
+                  }))
+                }
+              />
+              <Switch
+                label={__("Include multisite subsites", TEXT_DOMAIN)}
+                description={__(
+                  !contentSyncMultisite
+                    ? "This WordPress installation is not currently a multisite network."
+                    : !contentSyncNetworkActive
+                      ? "Network-activate SmartCloud Static Publisher before enabling full-network tracking."
+                      : "Track matching post types across the full WordPress network. Changing this scope requires a new successful normal publish baseline.",
+                  TEXT_DOMAIN,
+                )}
+                checked={schedulerRuleDraft.includeSubsites === true}
+                disabled={
+                  !contentSyncMultisite || !contentSyncNetworkActive
+                }
+                onChange={(event) =>
+                  setSchedulerRuleDraft((prev) => ({
+                    ...prev,
+                    includeSubsites: event.currentTarget.checked,
+                  }))
+                }
+              />
+              <Text fw={600} size="sm">
+                {__("Reconcile navigation surfaces", TEXT_DOMAIN)}
+              </Text>
+              <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs">
+                {(
+                  [
+                    [
+                      "includePostTypeArchives",
+                      __("Post type archives", TEXT_DOMAIN),
+                    ],
+                    [
+                      "includeTaxonomyArchives",
+                      __("Taxonomy archives", TEXT_DOMAIN),
+                    ],
+                    [
+                      "includeAuthorArchives",
+                      __("Author archives", TEXT_DOMAIN),
+                    ],
+                    ["includeDateArchives", __("Date archives", TEXT_DOMAIN)],
+                    ["includePostsPage", __("Posts page", TEXT_DOMAIN)],
+                    ["includeSitemapChain", __("Sitemap chain", TEXT_DOMAIN)],
+                  ] as Array<[keyof SchedulerRule, string]>
+                ).map(([field, label]) => (
+                  <Switch
+                    key={field}
+                    label={label}
+                    checked={schedulerRuleDraft[field] === true}
+                    onChange={(event) =>
+                      setSchedulerRuleDraft((prev) => ({
+                        ...prev,
+                        [field]: event.currentTarget.checked,
+                      }))
+                    }
+                    size="sm"
+                  />
+                ))}
+              </SimpleGrid>
+            </Stack>
           )}
 
           <TextInput
@@ -5962,10 +6832,17 @@ export default function Main({ store }: MainProps) {
       >
         <Stack gap="sm">
           <Text size="sm">
-            {__(
-              "Are you sure you want to delete this queued job? This cannot be undone.",
-              TEXT_DOMAIN,
-            )}
+            {state?.queueItems?.find(
+              (item) => item.id === pendingDeleteJobId,
+            )?.command === "content-sync"
+              ? __(
+                  "Abandon this content-sync retry? Its local plan and checkpoint will be cleared, but the journal cursor will stay unchanged so the scheduler can rediscover the unacknowledged range.",
+                  TEXT_DOMAIN,
+                )
+              : __(
+                  "Are you sure you want to delete this queued job? This cannot be undone.",
+                  TEXT_DOMAIN,
+                )}
           </Text>
           <Group justify="flex-end">
             <Button
@@ -5981,7 +6858,11 @@ export default function Main({ store }: MainProps) {
                 pendingDeleteJobId && void deleteQueuedJob(pendingDeleteJobId)
               }
             >
-              {__("Delete", TEXT_DOMAIN)}
+              {state?.queueItems?.find(
+                (item) => item.id === pendingDeleteJobId,
+              )?.command === "content-sync"
+                ? __("Abandon retry", TEXT_DOMAIN)
+                : __("Delete", TEXT_DOMAIN)}
             </Button>
           </Group>
         </Stack>

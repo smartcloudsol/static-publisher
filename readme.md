@@ -28,7 +28,7 @@ This repository and the distributed WordPress plugin ZIP do not bundle the Node.
 ## Repository Layout
 
 - `smartcloud-static-publisher.php`: plugin bootstrap, admin menu, REST API, runtime file IO
-- `hub-loader.php`: loader for the packaged shared WPSuite Hub assets under `hub-for-wpsuiteio/`
+- `hub-loader.php`: loader for the packaged shared WPSuite Hub assets under `smartcloud-wpsuite/`
 - `admin/`: React + Vite + Mantine admin app
 - `core/`: shared TypeScript package consumed by the admin app and exporter
 
@@ -52,7 +52,7 @@ If you keep Static Publisher next to the shared WPSuite Hub plugin during develo
 
 ```text
 /wp-content/plugins/
-  hub-for-wpsuiteio/
+  smartcloud-wpsuite/
   smartcloud-static-publisher/
 ```
 
@@ -93,14 +93,14 @@ In other words, `admin/dist/` and `admin/php/` are source-repository build input
 
 No Vite manifest is required in production packaging.
 
-## Assembling `hub-for-wpsuiteio/` for Distribution
+## Assembling `smartcloud-wpsuite/` for Distribution
 
-The distributed Static Publisher plugin also needs a packaged `hub-for-wpsuiteio/` directory built from the separate [Hub for WPSuite.io](https://github.com/smartcloudsol/hub-for-wpsuiteio) repository.
+The distributed Static Publisher plugin also needs a packaged `smartcloud-wpsuite/` directory built from the separate [SmartCloud WP Suite](https://github.com/smartcloudsol/smartcloud-wpsuite) repository.
 
 Typical Hub-side build commands are:
 
 ```bash
-cd ../hub-for-wpsuiteio/wpsuite-main
+cd ../smartcloud-wpsuite/wpsuite-main
 yarn install
 yarn run build-wp dist
 
@@ -123,17 +123,17 @@ yarn run build
 
 Then copy those shared Hub outputs into this plugin package like this:
 
-- `wpsuite-main/dist/*` -> `hub-for-wpsuiteio/`
-- `wpsuite-admin/php/*` and `wpsuite-admin/dist/*` -> `hub-for-wpsuiteio/`
-- `wpsuite-*-vendor/dist/*.js` -> `hub-for-wpsuiteio/assets/js/`
-- `wpsuite-*-vendor/dist/*.css` -> `hub-for-wpsuiteio/assets/css/`
+- `wpsuite-main/dist/*` -> `smartcloud-wpsuite/`
+- `wpsuite-admin/php/*` and `wpsuite-admin/dist/*` -> `smartcloud-wpsuite/`
+- `wpsuite-*-vendor/dist/*.js` -> `smartcloud-wpsuite/assets/js/`
+- `wpsuite-*-vendor/dist/*.css` -> `smartcloud-wpsuite/assets/css/`
 
 This is the same Hub packaging model used by the other WPSuite plugins. In practice:
 
 - `wpsuite-main/dist/` provides the globally loaded script that initializes WPSuite reCAPTCHA v3 when needed.
-- `wpsuite-admin/php/` contributes PHP entry files such as `index.php` that `hub-loader.php` expects to load from `hub-for-wpsuiteio/`.
+- `wpsuite-admin/php/` contributes PHP entry files such as `index.php` that `hub-loader.php` expects to load from `smartcloud-wpsuite/`.
 - `wpsuite-admin/dist/` contributes the built admin JS/CSS bundles for the shared Hub screens.
-- `wpsuite-*-vendor/dist/` contributes shared vendor bundles; for example Static Publisher admin code expects `hub-for-wpsuiteio/assets/css/mantine-vendor.css` and shared vendor scripts under `hub-for-wpsuiteio/assets/js/`.
+- `wpsuite-*-vendor/dist/` contributes shared vendor bundles; for example Static Publisher admin code expects `smartcloud-wpsuite/assets/css/mantine-vendor.css` and shared vendor scripts under `smartcloud-wpsuite/assets/js/`.
 
 The final packaged plugin should therefore contain a Hub folder shaped roughly like this:
 
@@ -143,7 +143,7 @@ smartcloud-static-publisher/
   hub-loader.php
   admin/
     ...
-  hub-for-wpsuiteio/
+  smartcloud-wpsuite/
     index.php
     model.php
     main.js
@@ -584,6 +584,7 @@ publisher-exporter queue-runner --runtime-dir "$RUNTIME_PATH" --max-jobs 1
 - `rewriteConcurrency` controls the final text rewrite pass. When omitted, it falls back to `assetDownloadConcurrency`, so existing configs keep working without a new required field.
 - `extraReplacements` supports key-value rewrite pairs for text output.
 - `postCrawlCopyMap` supports copying external files/folders into export output after crawl runs, including incremental crawl/publish; single-URL and retry-timeouts runs skip it. Source keys may use `@storage-root`, `@runtime`, or `@wp-root`; `@wp-root` resolves from `STATIC_PUBLISHER_WP_ROOT` or `WPSUITE_STATIC_PUBLISHER_WP_ROOT` on the crawler host.
+- Themes and plugins can make virtual, file-backed public routes incremental-safe with the `smartcloud_static_publisher_file_change_token_data` filter. Return a stable `fingerprint` covering the complete rendered response plus an optional `source` and non-sensitive `identity`; return `null` for URLs the provider does not own. Static Publisher hashes this data with the normalized URL and never exposes the provider fingerprint directly.
 
 For SDK deploy modes, unchanged-file detection is optimized:
 

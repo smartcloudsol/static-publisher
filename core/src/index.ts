@@ -1,6 +1,7 @@
 export {
   createStore,
   getDefaultPublisherCrawlMode,
+  hasPublisherContentSyncAccess,
   hasPublisherSubscription,
   getStoreSelect,
   loadPublisherConfig,
@@ -23,6 +24,12 @@ export {
 
 export type {
   PublisherCloudFrontConfig,
+  PublisherContentChangeEvent,
+  PublisherContentArchiveKind,
+  PublisherContentArchiveProjection,
+  PublisherContentProjection,
+  PublisherContentProjectionTerm,
+  PublisherContentSyncScope,
   PublisherCrawlMode,
   PublisherDeploymentProfile,
   PublisherDeploymentProfiles,

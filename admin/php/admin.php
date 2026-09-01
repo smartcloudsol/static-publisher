@@ -170,6 +170,12 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
             'callback' => array($this, 'handleGetState'),
         ));
 
+        register_rest_route(self::REST_NAMESPACE, '/content-sync/post-types', array(
+            'methods' => 'GET',
+            'permission_callback' => array($this, 'canManageRead'),
+            'callback' => array($this, 'handleGetContentSyncPostTypes'),
+        ));
+
         register_rest_route(self::REST_NAMESPACE, '/config', array(
             array(
                 'methods' => 'GET',
@@ -267,7 +273,14 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
             'currentCrawlEvent' => is_array($currentCrawlEvent) ? $currentCrawlEvent : null,
             'lastRun' => $lastRun,
             'schedulerState' => $this->plugin->readJsonFile($paths['schedulerState']),
+            'queueRunnerHeartbeat' => $this->plugin->readJsonFile($paths['queueRunnerHeartbeat']),
             'deployDiff' => $this->plugin->readJsonFile($paths['deployDiff']),
+            'contentSync' => array(
+                'state' => $this->plugin->readJsonFile($paths['contentSyncState']),
+                'current' => $this->plugin->readJsonFile($paths['contentSyncCurrent']),
+                'checkpoint' => $this->plugin->readJsonFile($paths['contentSyncCheckpoint']),
+                'baseline' => $this->plugin->readJsonFile($paths['contentSyncBaseline']),
+            ),
             'lockActive' => file_exists($paths['lock']),
             'queueLength' => count($queue),
             'queueItems' => array_map(array($this->plugin, 'sanitizeJobForState'), $queue),
@@ -276,6 +289,80 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         );
 
         return new WP_REST_Response($state, 200);
+    }
+
+    public function handleGetContentSyncPostTypes(): WP_REST_Response
+    {
+        if (!function_exists('is_plugin_active_for_network')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        $networkActive = is_multisite() && is_plugin_active_for_network('smartcloud-static-publisher/smartcloud-static-publisher.php');
+        $itemsBySlug = array();
+        $collect = static function () use (&$itemsBySlug): void {
+            $objects = get_post_types(array(
+                'public' => true,
+                'publicly_queryable' => true,
+            ), 'objects');
+            foreach (is_array($objects) ? $objects : array() as $slug => $object) {
+                if (!($object instanceof \WP_Post_Type) || !is_post_type_viewable($object)) {
+                    continue;
+                }
+                $name = sanitize_key((string) $slug);
+                if ($name === '') {
+                    continue;
+                }
+                $existing = $itemsBySlug[$name] ?? array('siteCount' => 0);
+                $itemsBySlug[$name] = array(
+                    'slug' => $name,
+                    'label' => sanitize_text_field((string) ($object->labels->singular_name ?? $object->label ?? $name)),
+                    'hasArchive' => !empty($existing['hasArchive']) || !empty($object->has_archive),
+                    'hierarchical' => !empty($existing['hierarchical']) || !empty($object->hierarchical),
+                    'siteCount' => (int) ($existing['siteCount'] ?? 0) + 1,
+                );
+            }
+        };
+        $collect();
+        if ($networkActive) {
+            $originBlogId = get_current_blog_id();
+            foreach (get_sites(array('fields' => 'ids', 'number' => 0)) as $blogId) {
+                if ((int) $blogId === $originBlogId) {
+                    continue;
+                }
+                switch_to_blog((int) $blogId);
+                try {
+                    $collect();
+                } finally {
+                    restore_current_blog();
+                }
+            }
+            global $wpdb;
+            $journalTable = $wpdb->base_prefix . 'smartcloud_static_publisher_content_events';
+            $journaledPostTypes = $wpdb->get_col("SELECT DISTINCT post_type FROM {$journalTable}");
+            foreach (is_array($journaledPostTypes) ? $journaledPostTypes : array() as $journaledPostType) {
+                $name = sanitize_key((string) $journaledPostType);
+                if ($name === '' || isset($itemsBySlug[$name])) {
+                    continue;
+                }
+                $itemsBySlug[$name] = array(
+                    'slug' => $name,
+                    'label' => $name,
+                    'hasArchive' => false,
+                    'hierarchical' => false,
+                    'siteCount' => 0,
+                );
+            }
+        }
+        $items = array_values($itemsBySlug);
+
+        usort($items, static function (array $left, array $right): int {
+            return strcasecmp((string) ($left['label'] ?? ''), (string) ($right['label'] ?? ''));
+        });
+
+        return new WP_REST_Response(array(
+            'items' => $items,
+            'multisite' => is_multisite(),
+            'networkActive' => $networkActive,
+        ), 200);
     }
 
     public function handleGetConfig(): WP_REST_Response
@@ -436,10 +523,11 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         }
 
         $deletedJob = null;
+        $contentSyncAbandoned = false;
         $paths = $this->plugin->getRuntimePaths();
 
         try {
-            $queueLength = $this->plugin->withQueueMutationLock(function () use ($jobId, $paths, &$deletedJob) {
+            $queueLength = $this->plugin->withQueueMutationLock(function () use ($jobId, $paths, &$deletedJob, &$contentSyncAbandoned) {
                 $queue = $this->plugin->readQueue();
                 $nextQueue = array();
 
@@ -459,6 +547,9 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
                     return null;
                 }
 
+                if (($deletedJob['command'] ?? '') === 'content-sync') {
+                    $contentSyncAbandoned = $this->abandonQueuedContentSyncState($deletedJob, $paths);
+                }
                 $this->plugin->writeJsonFile($paths['queue'], array_values($nextQueue));
                 return count($nextQueue);
             });
@@ -486,15 +577,72 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
             'message' => __('Queued job deleted from admin UI.', 'smartcloud-static-publisher'),
             'details' => array(
                 'queueLength' => $queueLength,
+                'contentSyncAbandoned' => $contentSyncAbandoned,
+                'journalCursorPreserved' => $contentSyncAbandoned,
             ),
         ));
+
+        if ($contentSyncAbandoned) {
+            $this->plugin->appendAuditLogEntry(array(
+                'eventType' => 'content-sync-abandoned',
+                'status' => 'info',
+                'actorSource' => 'wp-admin',
+                'actorUserId' => get_current_user_id(),
+                'jobId' => (string) ($deletedJob['id'] ?? $jobId),
+                'command' => 'content-sync',
+                'message' => __('Queued content-sync retry was abandoned; unacknowledged journal work remains discoverable.', 'smartcloud-static-publisher'),
+                'details' => array(
+                    'coalesceKey' => (string) ($deletedJob['coalesceKey'] ?? ''),
+                    'journalCursorPreserved' => true,
+                ),
+            ));
+        }
 
         return new WP_REST_Response(array(
             'success' => true,
             'job' => $this->plugin->sanitizeJobForState($deletedJob),
             'queueLength' => $queueLength,
-            'message' => __('Queued job deleted.', 'smartcloud-static-publisher'),
+            'message' => $contentSyncAbandoned
+                ? __('Content-sync retry abandoned. Its unacknowledged journal range can be rediscovered by the scheduler.', 'smartcloud-static-publisher')
+                : __('Queued job deleted.', 'smartcloud-static-publisher'),
         ), 200);
+    }
+
+    private function abandonQueuedContentSyncState(array $job, array $paths): bool
+    {
+        $current = $this->plugin->readJsonFile((string) ($paths['contentSyncCurrent'] ?? ''));
+        $jobId = sanitize_text_field((string) ($job['id'] ?? ''));
+        if (!is_array($current) || $jobId === '' || (string) ($current['jobId'] ?? '') !== $jobId) {
+            return false;
+        }
+
+        foreach (array(
+            'contentSyncCurrent',
+            'contentSyncImpactPlan',
+            'contentSyncCheckpoint',
+            'contentSyncCandidateManifest',
+            'contentSyncInvalidation',
+            'deployPlan',
+        ) as $pathKey) {
+            $file = (string) ($paths[$pathKey] ?? '');
+            if ($file !== '' && is_file($file) && !unlink($file)) {
+                throw new \RuntimeException(__('Content-sync state cleanup failed.', 'smartcloud-static-publisher'));
+            }
+        }
+
+        $coalesceKey = sanitize_text_field((string) ($job['coalesceKey'] ?? $current['coalesceKey'] ?? ''));
+        $statePath = (string) ($paths['contentSyncState'] ?? '');
+        $state = $this->plugin->readJsonFile($statePath);
+        if ($coalesceKey !== '' && is_array($state) && is_array($state['rules'][$coalesceKey] ?? null)) {
+            $state['updatedAt'] = gmdate('c');
+            $state['rules'][$coalesceKey]['retryAttempt'] = 0;
+            $state['rules'][$coalesceKey]['nextRetryAt'] = null;
+            $state['rules'][$coalesceKey]['lastError'] = null;
+            $state['rules'][$coalesceKey]['trailingWorkDetected'] = true;
+            $this->plugin->writeJsonFile($statePath, $state);
+        }
+
+        return true;
     }
 
     public function handleDownloadJobConfig(WP_REST_Request $request): WP_REST_Response

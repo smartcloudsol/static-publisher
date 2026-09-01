@@ -18,7 +18,7 @@ export async function getProAccessStatus(): Promise<ProAccessStatus> {
   const siteKey = String(wpsuite?.siteSettings?.siteKey ?? "").trim();
   return {
     isLinked: !!(accountId && siteId && siteKey),
-    hasSubscription: wpsuite?.siteSettings?.subscriber === true,
+    hasSubscription: false,
   };
 }
 

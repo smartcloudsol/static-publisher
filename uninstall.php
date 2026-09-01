@@ -44,9 +44,18 @@ function smartcloud_static_publisher_uninstall_site(): void
         'smartcloud_static_publisher_audit_cursor',
         'smartcloud_static_publisher_runtime_nonce',
         'smartcloud_static_publisher_queue_mutation_lock',
+        'smartcloud_static_publisher_content_journal_schema',
+        'smartcloud_static_publisher_content_sync_consumers',
+        'smartcloud_static_publisher_content_journal_retention_floor',
     ) as $option) {
         delete_option($option);
     }
+
+    global $wpdb;
+    $table = $wpdb->prefix . 'smartcloud_static_publisher_content_events';
+    $wpdb->query("DROP TABLE IF EXISTS {$table}"); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.SchemaChange -- Explicit plugin-owned uninstall cleanup.
+    $consumers_table = $wpdb->prefix . 'smartcloud_static_publisher_content_consumers';
+    $wpdb->query("DROP TABLE IF EXISTS {$consumers_table}"); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.SchemaChange -- Explicit plugin-owned uninstall cleanup.
 
     smartcloud_static_publisher_remove_storage();
 }
@@ -57,6 +66,8 @@ if (is_multisite()) {
         smartcloud_static_publisher_uninstall_site();
         restore_current_blog();
     }
+    delete_site_option('smartcloud_static_publisher_content_journal_schema');
+    delete_site_option('smartcloud_static_publisher_content_journal_retention_floor');
 } else {
     smartcloud_static_publisher_uninstall_site();
 }

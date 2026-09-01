@@ -45,6 +45,16 @@ function sanitizeStringArray(input: unknown): string[] {
     : [];
 }
 
+function sanitizePostTypes(input: unknown): string[] {
+  return [
+    ...new Set(
+      sanitizeStringArray(input)
+        .map((value) => value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))
+        .filter(Boolean),
+    ),
+  ];
+}
+
 function sanitizeDeploymentProfileS3(
   input: unknown,
 ): Partial<PublisherS3Config> | undefined {
@@ -191,7 +201,8 @@ function sanitizeSchedulerRule(
     command !== "deploy" &&
     command !== "invalidate" &&
     command !== "retry-timeouts" &&
-    command !== "url"
+    command !== "url" &&
+    command !== "content-sync"
   ) {
     return null;
   }
@@ -216,6 +227,11 @@ function sanitizeSchedulerRule(
 
   const crawlMode = String(row.crawlMode ?? "").trim();
   const deploymentProfile = String(row.deploymentProfile ?? "").trim();
+  const postTypes = sanitizePostTypes(row.postTypes);
+  const listingPaths = sanitizeStringArray(row.listingPaths);
+  if (command === "content-sync" && postTypes.length === 0) {
+    return null;
+  }
 
   return {
     id,
@@ -227,6 +243,21 @@ function sanitizeSchedulerRule(
       : {}),
     ...(deploymentProfile ? { deploymentProfile } : {}),
     ...(url ? { url } : {}),
+    ...(postTypes.length > 0 ? { postTypes } : {}),
+    ...(listingPaths.length > 0 ? { listingPaths } : {}),
+    ...Object.fromEntries(
+      [
+        "includePostTypeArchives",
+        "includeSubsites",
+        "includeTaxonomyArchives",
+        "includeAuthorArchives",
+        "includeDateArchives",
+        "includePostsPage",
+        "includeSitemapChain",
+      ]
+        .filter((key) => typeof row[key] === "boolean")
+        .map((key) => [key, row[key]]),
+    ),
   };
 }
 
@@ -303,8 +334,10 @@ export const loadPublisherConfig = async (): Promise<PublisherRemoteConfig> =>
 export const hasPublisherSubscription = (
   config: PublisherRemoteConfig | null | undefined,
 ): boolean =>
-  typeof config?.subscriptionType === "string" &&
-  config.subscriptionType.trim().length > 0;
+  config?.subscriptionType === "PROFESSIONAL" ||
+  config?.subscriptionType === "AGENCY";
+
+export const hasPublisherContentSyncAccess = hasPublisherSubscription;
 
 export const getDefaultPublisherCrawlMode = (
   config: PublisherRemoteConfig | null | undefined,
