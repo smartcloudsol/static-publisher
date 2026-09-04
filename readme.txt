@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.13
+Stable tag: 1.0.14
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -504,6 +504,9 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.0.14 =
+* Compatibility: Updated the bundled WP Suite Hub to 2.5.12 so provider abilities expose operation, draft-safety, and human-approval metadata consistently regardless of which active WP Suite plugin owns the shared runtime.
+
 = 1.0.13 =
 * Restore safety: Recover the last public slug when a trashed post is restored and republished, even if WordPress retained a `__trashed` desired-slug alias, and repair earlier invalid journal projections before impact planning.
 * Content-sync performance: Add Media Library file change tokens and verified release-fingerprint reuse for unchanged WordPress core, plugin, and theme assets so targeted jobs avoid redundant asset downloads and rewrites.
@@ -569,6 +572,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.14 =
+Recommended for sites running AI Kit or other Composer ability providers alongside Static Publisher. The shared Hub now preserves operation and review-safety metadata independently of runtime ownership order.
 
 = 1.0.13 =
 Recommended for sites using targeted content sync. Run one successful normal full or incremental publish after upgrading to establish the new release baseline and populate trusted Media Library asset tokens.
