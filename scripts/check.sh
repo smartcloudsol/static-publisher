@@ -56,6 +56,7 @@ php -l "$PROJECT_ROOT/includes/class-content-change-journal.php" >/dev/null
 php -l "$PROJECT_ROOT/uninstall.php" >/dev/null
 php "$PROJECT_ROOT/tests/hub-runtime-contract.test.php"
 php "$PROJECT_ROOT/tests/content-sync-contract.test.php"
+php "$PROJECT_ROOT/tests/content-sync-post-types.test.php"
 
 run_npm "$PROJECT_ROOT/core" run lint
 run_npm "$PROJECT_ROOT/core" exec -- tsc -p tsconfig.types.json --noEmit --declaration false --emitDeclarationOnly false
@@ -64,6 +65,7 @@ run_npm "$PROJECT_ROOT/exporter" run check
 run_npm "$PROJECT_ROOT/exporter" test
 run_npm "$PROJECT_ROOT/admin" run lint
 run_npm "$PROJECT_ROOT/admin" exec -- tsc --noEmit
+run_npm "$PROJECT_ROOT/admin" test
 
 if ((RUN_BUILD)); then
   "$SCRIPT_DIR/build.sh"

@@ -332,7 +332,7 @@ final class ContentChangeJournal
         $data = $this->requestData($request);
         $postTypes = $this->sanitizePostTypes($data['postTypes'] ?? array(), !empty($data['includeSubsites']));
         if (empty($postTypes)) {
-            return $this->errorResponse('invalid-post-types', __('Select at least one public, publicly queryable post type.', 'smartcloud-static-publisher'), 400);
+            return $this->errorResponse('invalid-post-types', __('Select at least one supported public content type (posts, pages, or public custom post types).', 'smartcloud-static-publisher'), 400);
         }
         $includeSubsites = !empty($data['includeSubsites']);
         $networkScopeError = $this->networkScopeError($includeSubsites);
@@ -375,7 +375,7 @@ final class ContentChangeJournal
         $data = $this->requestData($request);
         $postTypes = $this->sanitizePostTypes($data['postTypes'] ?? array(), !empty($data['includeSubsites']));
         if (empty($postTypes)) {
-            return $this->errorResponse('invalid-post-types', __('Select at least one public, publicly queryable post type.', 'smartcloud-static-publisher'), 400);
+            return $this->errorResponse('invalid-post-types', __('Select at least one supported public content type (posts, pages, or public custom post types).', 'smartcloud-static-publisher'), 400);
         }
         $includeSubsites = !empty($data['includeSubsites']);
         $networkScopeError = $this->networkScopeError($includeSubsites);
@@ -1195,11 +1195,16 @@ final class ContentChangeJournal
 
     private function isJournalPostType(string $postType): bool
     {
-        $object = get_post_type_object($postType);
+        return self::isSupportedPostType(get_post_type_object($postType));
+    }
+
+    /** Use WordPress viewability semantics, including built-in pages. */
+    public static function isSupportedPostType($object): bool
+    {
         return $object instanceof \WP_Post_Type
             && $object->public
-            && $object->publicly_queryable
-            && !in_array($postType, array('attachment', 'revision', 'nav_menu_item'), true);
+            && is_post_type_viewable($object)
+            && !in_array($object->name, array('attachment', 'revision', 'nav_menu_item'), true);
     }
 
     private function sanitizePostTypes($value, bool $includeSubsites = false): array

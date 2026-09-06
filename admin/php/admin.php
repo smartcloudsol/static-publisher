@@ -3,6 +3,7 @@
 namespace SmartCloud\WPSuite\StaticPublisher\Admin;
 
 use SmartCloud\WPSuite\StaticPublisher\Plugin;
+use SmartCloud\WPSuite\StaticPublisher\ContentChangeJournal;
 use WP_REST_Request;
 use WP_REST_Response;
 use const SmartCloud\WPSuite\StaticPublisher\VERSION;
@@ -301,10 +302,9 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
         $collect = static function () use (&$itemsBySlug): void {
             $objects = get_post_types(array(
                 'public' => true,
-                'publicly_queryable' => true,
             ), 'objects');
             foreach (is_array($objects) ? $objects : array() as $slug => $object) {
-                if (!($object instanceof \WP_Post_Type) || !is_post_type_viewable($object)) {
+                if (!ContentChangeJournal::isSupportedPostType($object)) {
                     continue;
                 }
                 $name = sanitize_key((string) $slug);

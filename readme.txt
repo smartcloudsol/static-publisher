@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.14
+Stable tag: 1.0.15
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -504,6 +504,13 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.0.15 =
+* Admin UI: Keep content-sync status cards, long consumer identifiers, baseline badges, and error messages within the mobile content rail. Avoid repeating identical baseline errors, retain distinct retry errors, and keep table headings readable.
+* Admin UI: Make audit and scheduler tables horizontally scrollable on desktop and mobile, keep audit statuses readable, and preserve manual crawl-mode choices while applying the incremental default after subscription verification.
+* Content sync: Include public WordPress pages consistently in the scheduler selector and journal validation, and exclude unsupported Media entries. This also fixes normal publish baseline capture for rules containing pages.
+* Content-sync status: Show only the saved active rule scope and deployment target, so superseded baseline warnings do not remain after a successful publish.
+* PRO settings: Merge scheduler and deployment-target changes with authoritative remote settings, reject failed reads before saving, and display the saved response after refreshing the local cache.
+
 = 1.0.14 =
 * Compatibility: Updated the bundled WP Suite Hub to 2.5.12 so provider abilities expose operation, draft-safety, and human-approval metadata consistently regardless of which active WP Suite plugin owns the shared runtime.
 
@@ -572,6 +579,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.15 =
+Review content-sync rules and add Page where needed; remove Media if previously selected. Save PRO Scheduler Settings, then run one successful normal full or incremental publish to establish a baseline for the updated release and scope. Previously overwritten rules must be re-entered.
 
 = 1.0.14 =
 Recommended for sites running AI Kit or other Composer ability providers alongside Static Publisher. The shared Hub now preserves operation and review-safety metadata independently of runtime ownership order.

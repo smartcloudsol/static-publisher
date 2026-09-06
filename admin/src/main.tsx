@@ -58,13 +58,12 @@ import {
 } from "@smart-cloud/publisher-core";
 import { getWpSuite } from "@smart-cloud/wpsuite-core";
 import DocSidebar from "./DocSidebar";
+import { selectCurrentContentSyncStates } from "./content-sync-status";
 
 const TEXT_DOMAIN = "smartcloud-static-publisher";
 const IS_PREMIUM_BUILD = __WPSUITE_PREMIUM__;
 
-function switchControlStyles(
-  disabled = false,
-): Record<string, CSSProperties> {
+function switchControlStyles(disabled = false): Record<string, CSSProperties> {
   const cursor = disabled ? "not-allowed" : "pointer";
   return {
     input: {
@@ -1481,9 +1480,7 @@ function buildStableCurrentProgress(
                   pagesRendered ?? 0
                 }, reused/skipped ${pagesReusedOrSkipped ?? 0}, processed ${
                   doneSitemaps ?? sitemapsTotal ?? 0
-                } sitemaps and ${
-                  assetsProcessed ?? assetsTotal ?? 0
-                } assets.`
+                } sitemaps and ${assetsProcessed ?? assetsTotal ?? 0} assets.`
               : `Processed ${pagesProcessed ?? 0} of ${
                   pagesTotal ?? 0
                 } pages so far, ${sitemapsTotal ?? 0} sitemaps, ${
@@ -1687,10 +1684,6 @@ type MainProps = {
 export default function Main({ store }: MainProps) {
   const boot = useMemo(() => getBoot(), []);
   const initialProAccess = useMemo(() => getInitialProAccessStatus(), []);
-  const initialHasIncrementalAccess =
-    IS_PREMIUM_BUILD &&
-    initialProAccess.isLinked &&
-    initialProAccess.hasSubscription;
   const isMobile = useMediaQuery(
     `(max-width: ${DEFAULT_THEME.breakpoints.sm})`,
   );
@@ -1703,9 +1696,7 @@ export default function Main({ store }: MainProps) {
   const [queueing, setQueueing] = useState(false);
   const [refreshingState, setRefreshingState] = useState(false);
   const [command, setCommand] = useState<JobCommand>("publish");
-  const [crawlMode, setCrawlMode] = useState<CrawlMode>(() =>
-    getDefaultCrawlMode(initialHasIncrementalAccess),
-  );
+  const [selectedCrawlMode, setCrawlMode] = useState<CrawlMode | null>(null);
   const [deploymentProfile, setDeploymentProfile] = useState("");
   const [singleUrl, setSingleUrl] = useState("");
   const [selectedLog, setSelectedLog] = useState("");
@@ -1782,6 +1773,13 @@ export default function Main({ store }: MainProps) {
     mapToRows(config.postCrawlCopyMap),
   );
   const [proAccess, setProAccess] = useState<ProAccessStatus>(initialProAccess);
+  const [savedProConfig, setSavedProConfig] = useState<ProConfigPatch | null>(
+    null,
+  );
+  const [contentSyncRuleStates, setContentSyncRuleStates] = useState<
+    ContentSyncRuleState[]
+  >([]);
+  const [contentSyncStatusError, setContentSyncStatusError] = useState("");
   const [mainSection, setMainSection] = useState<AdminTab>("configuration");
   const [hasSavedConfig, setHasSavedConfig] = useState(false);
   const initialTabResolvedRef = useRef(false);
@@ -2261,6 +2259,7 @@ export default function Main({ store }: MainProps) {
       );
     }
 
+    const lastUpdate = Date.now();
     const response = await fetch(
       `${restUrl.replace(/\/$/, "")}/update-site-settings`,
       {
@@ -2272,7 +2271,7 @@ export default function Main({ store }: MainProps) {
         },
         body: JSON.stringify({
           ...siteSettings,
-          lastUpdate: Date.now(),
+          lastUpdate,
         }),
       },
     );
@@ -2281,6 +2280,8 @@ export default function Main({ store }: MainProps) {
       const message = await response.text();
       throw new Error(message || `HTTP ${response.status}`);
     }
+    // Config readers retain this object reference for their cache-busting URL.
+    siteSettings.lastUpdate = lastUpdate;
   };
 
   const hydrateStoreProConfig = () => {
@@ -2291,6 +2292,11 @@ export default function Main({ store }: MainProps) {
     if (!publisherConfig) {
       return;
     }
+    setSavedProConfig({
+      scheduler: publisherConfig.scheduler,
+      deploymentProfiles: publisherConfig.deploymentProfiles,
+      defaultDeploymentProfile: publisherConfig.defaultDeploymentProfile,
+    });
     const scheduler = publisherConfig.scheduler
       ? sanitizeSchedulerFromRemote(publisherConfig.scheduler, config.scheduler)
       : config.scheduler;
@@ -2767,9 +2773,45 @@ export default function Main({ store }: MainProps) {
   const schedulerCoalescedCounts =
     state?.schedulerState?.coalescedCountByRuleId ?? {};
   const contentSyncRuntime = state?.contentSync ?? null;
-  const contentSyncRuleStates = Object.values(
-    contentSyncRuntime?.state?.rules ?? {},
-  );
+  const savedContentSyncConfig = useMemo(() => {
+    if (!state?.config || !savedProConfig) return null;
+    return {
+      ...state.config,
+      scheduler: sanitizeSchedulerFromRemote(
+        savedProConfig.scheduler,
+        DEFAULT_CONFIG.scheduler,
+      ),
+      deploymentProfiles: normalizeDeploymentProfileMap(
+        (savedProConfig.deploymentProfiles ?? {}) as Record<string, unknown>,
+      ),
+      defaultDeploymentProfile: savedProConfig.defaultDeploymentProfile ?? "",
+    };
+  }, [state, savedProConfig]);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rules = savedContentSyncConfig
+          ? await selectCurrentContentSyncStates(
+              savedContentSyncConfig,
+              contentSyncRuntime?.state?.rules ?? {},
+            )
+          : [];
+        if (!cancelled) {
+          setContentSyncRuleStates(rules);
+          setContentSyncStatusError("");
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setContentSyncRuleStates([]);
+          setContentSyncStatusError((error as Error).message);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [savedContentSyncConfig, contentSyncRuntime?.state?.rules]);
   const contentSyncBaselineRequiredStates = contentSyncRuleStates.filter(
     (ruleState) => ruleState.baselineStatus === "required",
   );
@@ -2794,6 +2836,7 @@ export default function Main({ store }: MainProps) {
   const hasActiveSubscription = proAccess.isLinked && proAccess.hasSubscription;
   const hasIncrementalAccess = IS_PREMIUM_BUILD && hasActiveSubscription;
   const defaultCrawlMode = getDefaultCrawlMode(hasIncrementalAccess);
+  const crawlMode = selectedCrawlMode ?? defaultCrawlMode;
   const proSchedulerEditingEnabled = IS_PREMIUM_BUILD && hasActiveSubscription;
   const canManageExtraDeploymentProfiles =
     IS_PREMIUM_BUILD && hasActiveSubscription;
@@ -2980,11 +3023,21 @@ export default function Main({ store }: MainProps) {
     }
   };
 
-  const syncRemoteProConfigState = async () => {
+  const syncRemoteProConfigState = async (saved: ProConfigPatch | null) => {
     await refreshSiteSettingsCache();
     await loadState({ syncConfig: true, refreshSelectedLog: false });
     await reloadConfig(store);
     hydrateStoreProConfig();
+    if (saved) {
+      setSavedProConfig(saved);
+      setConfig((prev) => ({
+        ...prev,
+        scheduler: sanitizeSchedulerFromRemote(saved.scheduler, prev.scheduler),
+        deploymentProfiles: normalizeDeploymentProfileMap(
+          (saved.deploymentProfiles ?? {}) as Record<string, unknown>,
+        ),
+      }));
+    }
     await refreshProAccessStatus();
   };
 
@@ -3010,11 +3063,11 @@ export default function Main({ store }: MainProps) {
     try {
       const nextScheduler = applyListFields().scheduler;
       const module = await loadProConfigModule();
-      await module.saveRemoteProConfig({
+      const saved = await module.saveRemoteProConfig({
         scheduler: nextScheduler,
       });
 
-      await syncRemoteProConfigState();
+      await syncRemoteProConfigState(saved);
 
       notifications.show({
         title: __("PRO settings saved", TEXT_DOMAIN),
@@ -3056,12 +3109,12 @@ export default function Main({ store }: MainProps) {
         applyListFields().deploymentProfiles,
       );
       const module = await loadProConfigModule();
-      await module.saveRemoteProConfig({
+      const saved = await module.saveRemoteProConfig({
         defaultDeploymentProfile: "",
         deploymentProfiles: nextDeploymentProfiles,
       });
 
-      await syncRemoteProConfigState();
+      await syncRemoteProConfigState(saved);
 
       notifications.show({
         title: __("PRO settings saved", TEXT_DOMAIN),
@@ -3288,6 +3341,19 @@ export default function Main({ store }: MainProps) {
 .logs-controls .logs-file-select { flex: 1 1 160px; min-width: 140px; }
 .logs-controls .logs-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .sp-admin-shell .sp-main-content .mantine-Card-root { border: 0 !important; box-shadow: none !important; }
+.sp-data-table-scroll { width: 100%; min-width: 0; overflow-x: auto; }
+.sp-data-table-scroll th, .sp-data-table-scroll td { overflow-wrap: anywhere; }
+.sp-data-table-scroll th { overflow-wrap: normal; white-space: nowrap; }
+.sp-content-sync-rule { min-width: 0; overflow-wrap: anywhere; }
+.sp-content-sync-rule-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--mantine-spacing-md); }
+.sp-content-sync-rule-layout > *, .sp-content-sync-rule .mantine-Alert-body { min-width: 0; }
+.sp-content-sync-rule .mantine-Code-root { white-space: normal; overflow-wrap: anywhere; max-width: 100%; }
+.sp-content-sync-rule .mantine-Badge-root { flex-shrink: 0; max-width: 100%; }
+@media (min-width: 768px) {
+  .sp-content-sync-rule-layout { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+}
+.sp-data-table-scroll .mantine-Badge-root { max-width: none; flex-shrink: 0; white-space: nowrap; }
+.sp-data-table-scroll .mantine-Badge-label { overflow: visible; text-overflow: clip; }
 @media (max-width: 767px) {
   .logs-controls > *, .logs-controls .logs-actions { flex: 1 1 100%; width: 100%; }
   .logs-controls .logs-actions { justify-content: stretch; }
@@ -4348,6 +4414,17 @@ export default function Main({ store }: MainProps) {
                               </Text>
                             </Alert>
                           )}
+                          {contentSyncStatusError && (
+                            <Alert
+                              color="yellow"
+                              title={__(
+                                "Content-sync status unavailable",
+                                TEXT_DOMAIN,
+                              )}
+                            >
+                              {contentSyncStatusError}
+                            </Alert>
+                          )}
                           {contentSyncBaselineRequiredStates.length > 0 && (
                             <Alert mb="md" color="red" variant="light">
                               <Stack gap={4}>
@@ -4369,7 +4446,7 @@ export default function Main({ store }: MainProps) {
                                       }
                                       size="xs"
                                     >
-                                      <Code>{ruleState.ruleId || "-"}</Code>: {" "}
+                                      <Code>{ruleState.ruleId || "-"}</Code>:{" "}
                                       {ruleState.baselineReason ||
                                         __(
                                           "The active release changed.",
@@ -4400,17 +4477,7 @@ export default function Main({ store }: MainProps) {
                               onChange={(value) => {
                                 const nextCommand =
                                   (value as JobCommand) || "publish";
-                                const nextCommandSupportsCrawlMode =
-                                  nextCommand === "publish" ||
-                                  nextCommand === "crawl";
-                                const previousCommandSupportsCrawlMode =
-                                  command === "publish" || command === "crawl";
                                 setCommand(nextCommand);
-                                if (!nextCommandSupportsCrawlMode) {
-                                  setCrawlMode(defaultCrawlMode);
-                                } else if (!previousCommandSupportsCrawlMode) {
-                                  setCrawlMode(defaultCrawlMode);
-                                }
                                 if (
                                   nextCommand !== "publish" &&
                                   nextCommand !== "deploy" &&
@@ -5353,6 +5420,18 @@ export default function Main({ store }: MainProps) {
                             )}
                           </Group>
                         </Group>
+                        {contentSyncStatusError && (
+                          <Alert
+                            color="yellow"
+                            mb="sm"
+                            title={__(
+                              "Content-sync status unavailable",
+                              TEXT_DOMAIN,
+                            )}
+                          >
+                            {contentSyncStatusError}
+                          </Alert>
+                        )}
                         {!currentContentSync &&
                         contentSyncRuleStates.length === 0 ? (
                           <Alert color="gray" variant="light">
@@ -5429,16 +5508,14 @@ export default function Main({ store }: MainProps) {
                               return (
                                 <Box
                                   key={key}
+                                  className="sp-content-sync-rule"
                                   p="sm"
                                   style={{
                                     border: "1px solid #dee2e6",
                                     borderRadius: 8,
                                   }}
                                 >
-                                  <Group
-                                    justify="space-between"
-                                    align="flex-start"
-                                  >
+                                  <Box className="sp-content-sync-rule-layout">
                                     <Stack gap={3}>
                                       <Group gap="xs">
                                         <Code>{ruleState.ruleId || "-"}</Code>
@@ -5515,13 +5592,19 @@ export default function Main({ store }: MainProps) {
                                           {ruleState.nextRetryAt}
                                         </Text>
                                       )}
-                                      {ruleState.lastError && (
-                                        <Text size="xs" c="red">
-                                          {ruleState.lastError}
-                                        </Text>
-                                      )}
+                                      {ruleState.lastError &&
+                                        !(
+                                          ruleState.baselineStatus ===
+                                            "required" &&
+                                          ruleState.lastError ===
+                                            ruleState.baselineReason
+                                        ) && (
+                                          <Text size="xs" c="red">
+                                            {ruleState.lastError}
+                                          </Text>
+                                        )}
                                     </Stack>
-                                  </Group>
+                                  </Box>
                                 </Box>
                               );
                             })}
@@ -5552,115 +5635,134 @@ export default function Main({ store }: MainProps) {
                             </Text>
                           </Alert>
                         ) : (
-                          <Table
-                            withTableBorder
-                            withColumnBorders
-                            highlightOnHover
+                          <Box
+                            className="sp-data-table-scroll"
+                            tabIndex={0}
+                            role="region"
+                            aria-label={__("Scheduler rules", TEXT_DOMAIN)}
                           >
-                            <Table.Thead>
-                              <Table.Tr>
-                                <Table.Th>{__("ID", TEXT_DOMAIN)}</Table.Th>
-                                <Table.Th>
-                                  {__("Command", TEXT_DOMAIN)}
-                                </Table.Th>
-                                <Table.Th>
-                                  {__("Profile", TEXT_DOMAIN)}
-                                </Table.Th>
-                                <Table.Th>
-                                  {__("Interval", TEXT_DOMAIN)}
-                                </Table.Th>
-                                <Table.Th>
-                                  {__("Last evaluation", TEXT_DOMAIN)}
-                                </Table.Th>
-                                <Table.Th>{__("Scope", TEXT_DOMAIN)}</Table.Th>
-                                <Table.Th>
-                                  {__("Enabled", TEXT_DOMAIN)}
-                                </Table.Th>
-                                <Table.Th>
-                                  {__("Actions", TEXT_DOMAIN)}
-                                </Table.Th>
-                              </Table.Tr>
-                            </Table.Thead>
-                            <Table.Tbody>
-                              {config.scheduler.rules.map((rule, index) => (
-                                <Table.Tr key={`${rule.id}-${index}`}>
-                                  <Table.Td>{rule.id}</Table.Td>
-                                  <Table.Td>
-                                    {formatJobCommandLabel(
-                                      rule.command,
-                                      rule.crawlMode,
-                                    )}
-                                  </Table.Td>
-                                  <Table.Td>
-                                    {rule.command === "publish" ||
-                                    rule.command === "deploy" ||
-                                    rule.command === "invalidate" ||
-                                    rule.command === "content-sync"
-                                      ? rule.deploymentProfile ||
-                                        __("base target", TEXT_DOMAIN)
-                                      : "-"}
-                                  </Table.Td>
-                                  <Table.Td>{`${rule.intervalMinutes}m`}</Table.Td>
-                                  <Table.Td>
-                                    <Stack gap={2}>
-                                      <Text size="sm">
-                                        {formatSchedulerLastEnqueue(
-                                          rule,
-                                          schedulerBuckets[rule.id],
-                                        )}
-                                      </Text>
-                                      {rule.command === "content-sync" && (
-                                        <Text size="xs" c="dimmed">
-                                          {__("Coalesced", TEXT_DOMAIN)}:{" "}
-                                          {schedulerCoalescedCounts[rule.id] ??
-                                            0}
-                                        </Text>
-                                      )}
-                                    </Stack>
-                                  </Table.Td>
-                                  <Table.Td>
-                                    <Text size="xs">
-                                      {summarizeSchedulerScope(rule)}
-                                    </Text>
-                                  </Table.Td>
-                                  <Table.Td>
-                                    <Badge
-                                      color={rule.enabled ? "green" : "gray"}
-                                    >
-                                      {rule.enabled
-                                        ? __("Yes", TEXT_DOMAIN)
-                                        : __("No", TEXT_DOMAIN)}
-                                    </Badge>
-                                  </Table.Td>
-                                  <Table.Td>
-                                    <Group gap="xs">
-                                      <ActionIcon
-                                        variant="subtle"
-                                        size="sm"
-                                        onClick={() =>
-                                          openSchedulerRuleEdit(index)
-                                        }
-                                        disabled={!proSchedulerEditingEnabled}
-                                      >
-                                        <IconSettings size={14} />
-                                      </ActionIcon>
-                                      <ActionIcon
-                                        variant="subtle"
-                                        color="red"
-                                        size="sm"
-                                        onClick={() =>
-                                          removeSchedulerRule(index)
-                                        }
-                                        disabled={!proSchedulerEditingEnabled}
-                                      >
-                                        <IconTrash size={14} />
-                                      </ActionIcon>
-                                    </Group>
-                                  </Table.Td>
+                            <Table
+                              miw={1100}
+                              withTableBorder
+                              withColumnBorders
+                              highlightOnHover
+                            >
+                              <Table.Thead>
+                                <Table.Tr>
+                                  <Table.Th>{__("ID", TEXT_DOMAIN)}</Table.Th>
+                                  <Table.Th>
+                                    {__("Command", TEXT_DOMAIN)}
+                                  </Table.Th>
+                                  <Table.Th>
+                                    {__("Profile", TEXT_DOMAIN)}
+                                  </Table.Th>
+                                  <Table.Th>
+                                    {__("Interval", TEXT_DOMAIN)}
+                                  </Table.Th>
+                                  <Table.Th>
+                                    {__("Last evaluation", TEXT_DOMAIN)}
+                                  </Table.Th>
+                                  <Table.Th>
+                                    {__("Scope", TEXT_DOMAIN)}
+                                  </Table.Th>
+                                  <Table.Th>
+                                    {__("Enabled", TEXT_DOMAIN)}
+                                  </Table.Th>
+                                  <Table.Th>
+                                    {__("Actions", TEXT_DOMAIN)}
+                                  </Table.Th>
                                 </Table.Tr>
-                              ))}
-                            </Table.Tbody>
-                          </Table>
+                              </Table.Thead>
+                              <Table.Tbody>
+                                {config.scheduler.rules.map((rule, index) => (
+                                  <Table.Tr key={`${rule.id}-${index}`}>
+                                    <Table.Td>{rule.id}</Table.Td>
+                                    <Table.Td>
+                                      {formatJobCommandLabel(
+                                        rule.command,
+                                        rule.crawlMode,
+                                      )}
+                                    </Table.Td>
+                                    <Table.Td>
+                                      {rule.command === "publish" ||
+                                      rule.command === "deploy" ||
+                                      rule.command === "invalidate" ||
+                                      rule.command === "content-sync"
+                                        ? rule.deploymentProfile ||
+                                          __("base target", TEXT_DOMAIN)
+                                        : "-"}
+                                    </Table.Td>
+                                    <Table.Td>{`${rule.intervalMinutes}m`}</Table.Td>
+                                    <Table.Td>
+                                      <Stack gap={2}>
+                                        <Text size="sm">
+                                          {formatSchedulerLastEnqueue(
+                                            rule,
+                                            schedulerBuckets[rule.id],
+                                          )}
+                                        </Text>
+                                        {rule.command === "content-sync" && (
+                                          <Text size="xs" c="dimmed">
+                                            {__("Coalesced", TEXT_DOMAIN)}:{" "}
+                                            {schedulerCoalescedCounts[
+                                              rule.id
+                                            ] ?? 0}
+                                          </Text>
+                                        )}
+                                      </Stack>
+                                    </Table.Td>
+                                    <Table.Td>
+                                      <Text size="xs">
+                                        {summarizeSchedulerScope(rule)}
+                                      </Text>
+                                    </Table.Td>
+                                    <Table.Td>
+                                      <Badge
+                                        color={rule.enabled ? "green" : "gray"}
+                                      >
+                                        {rule.enabled
+                                          ? __("Yes", TEXT_DOMAIN)
+                                          : __("No", TEXT_DOMAIN)}
+                                      </Badge>
+                                    </Table.Td>
+                                    <Table.Td>
+                                      <Group gap="xs" wrap="nowrap">
+                                        <ActionIcon
+                                          variant="subtle"
+                                          aria-label={__(
+                                            "Edit scheduler rule",
+                                            TEXT_DOMAIN,
+                                          )}
+                                          size="sm"
+                                          onClick={() =>
+                                            openSchedulerRuleEdit(index)
+                                          }
+                                          disabled={!proSchedulerEditingEnabled}
+                                        >
+                                          <IconSettings size={14} />
+                                        </ActionIcon>
+                                        <ActionIcon
+                                          variant="subtle"
+                                          color="red"
+                                          aria-label={__(
+                                            "Remove scheduler rule",
+                                            TEXT_DOMAIN,
+                                          )}
+                                          size="sm"
+                                          onClick={() =>
+                                            removeSchedulerRule(index)
+                                          }
+                                          disabled={!proSchedulerEditingEnabled}
+                                        >
+                                          <IconTrash size={14} />
+                                        </ActionIcon>
+                                      </Group>
+                                    </Table.Td>
+                                  </Table.Tr>
+                                ))}
+                              </Table.Tbody>
+                            </Table>
+                          </Box>
                         )}
                       </Stack>
                       <Text size="xs" c="dimmed">
@@ -5998,12 +6100,28 @@ export default function Main({ store }: MainProps) {
                           )}
                         />
                       </SimpleGrid>
-                      <Box mt="md">
+                      <Box
+                        mt="md"
+                        className="sp-data-table-scroll"
+                        tabIndex={0}
+                        role="region"
+                        aria-label={__("Audit Log", TEXT_DOMAIN)}
+                      >
                         <Table
+                          miw={1280}
+                          layout="fixed"
                           withTableBorder
                           withColumnBorders
                           highlightOnHover
                         >
+                          <colgroup>
+                            <col style={{ width: 180 }} />
+                            <col style={{ width: 200 }} />
+                            <col style={{ width: 150 }} />
+                            <col style={{ width: 180 }} />
+                            <col style={{ width: 150 }} />
+                            <col />
+                          </colgroup>
                           <Table.Thead>
                             <Table.Tr>
                               <Table.Th>{__("Time", TEXT_DOMAIN)}</Table.Th>
@@ -6345,14 +6463,12 @@ export default function Main({ store }: MainProps) {
                   !contentSyncMultisite
                     ? "This WordPress installation is not currently a multisite network."
                     : !contentSyncNetworkActive
-                      ? "Network-activate SmartCloud Static Publisher before enabling full-network tracking."
-                      : "Track matching post types across the full WordPress network. Changing this scope requires a new successful normal publish baseline.",
+                    ? "Network-activate SmartCloud Static Publisher before enabling full-network tracking."
+                    : "Track matching post types across the full WordPress network. Changing this scope requires a new successful normal publish baseline.",
                   TEXT_DOMAIN,
                 )}
                 checked={schedulerRuleDraft.includeSubsites === true}
-                disabled={
-                  !contentSyncMultisite || !contentSyncNetworkActive
-                }
+                disabled={!contentSyncMultisite || !contentSyncNetworkActive}
                 styles={switchControlStyles(
                   !contentSyncMultisite || !contentSyncNetworkActive,
                 )}
@@ -6889,9 +7005,8 @@ export default function Main({ store }: MainProps) {
       >
         <Stack gap="sm">
           <Text size="sm">
-            {state?.queueItems?.find(
-              (item) => item.id === pendingDeleteJobId,
-            )?.command === "content-sync"
+            {state?.queueItems?.find((item) => item.id === pendingDeleteJobId)
+              ?.command === "content-sync"
               ? __(
                   "Abandon this content-sync retry? Its local plan and checkpoint will be cleared, but the journal cursor will stay unchanged so the scheduler can rediscover the unacknowledged range.",
                   TEXT_DOMAIN,
@@ -6915,9 +7030,8 @@ export default function Main({ store }: MainProps) {
                 pendingDeleteJobId && void deleteQueuedJob(pendingDeleteJobId)
               }
             >
-              {state?.queueItems?.find(
-                (item) => item.id === pendingDeleteJobId,
-              )?.command === "content-sync"
+              {state?.queueItems?.find((item) => item.id === pendingDeleteJobId)
+                ?.command === "content-sync"
                 ? __("Abandon retry", TEXT_DOMAIN)
                 : __("Delete", TEXT_DOMAIN)}
             </Button>
