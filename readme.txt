@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.15
+Stable tag: 1.0.16
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -504,6 +504,10 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.0.16 =
+* Dependencies: Refresh Publisher Core and WP Suite Core, WordPress packages, JOSE, Mantine, and build tooling while retaining React 18 compatibility; production dependency audits are clean.
+* Content-sync archives: Let themes map captured and historical taxonomy changes to their public archive routes and query scopes, preserving old term membership and accurate empty-archive handling.
+
 = 1.0.15 =
 * Admin UI: Keep content-sync status cards, long consumer identifiers, baseline badges, and error messages within the mobile content rail. Avoid repeating identical baseline errors, retain distinct retry errors, and keep table headings readable.
 * Admin UI: Make audit and scheduler tables horizontally scrollable on desktop and mobile, keep audit statuses readable, and preserve manual crawl-mode choices while applying the incremental default after subscription verification.
@@ -579,6 +583,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.16 =
+Sites with theme-specific taxonomy archives must install the matching theme routing integration, then run one successful normal full or incremental publish to establish the new release baseline. Existing content-sync retries retain their original impact plan; the successful normal publish supersedes it safely.
 
 = 1.0.15 =
 Review content-sync rules and add Page where needed; remove Media if previously selected. Save PRO Scheduler Settings, then run one successful normal full or incremental publish to establish a baseline for the updated release and scope. Previously overwritten rules must be re-entered.

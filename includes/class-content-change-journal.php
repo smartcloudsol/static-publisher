@@ -848,7 +848,8 @@ final class ContentChangeJournal
             }
         }
 
-        $query = new \WP_Query($queryArgs);
+        $filteredQueryArgs = apply_filters('smartcloud_static_publisher_content_archive_query_args', $queryArgs, $family);
+        $query = new \WP_Query(is_array($filteredQueryArgs) ? $filteredQueryArgs : $queryArgs);
         $maxPages = max(1, (int) $query->max_num_pages);
         $pageUrls = array((string) $family['url']);
         for ($page = 2; $page <= $maxPages; $page++) {
@@ -887,11 +888,28 @@ final class ContentChangeJournal
         if (!is_array($candidate) || !is_array($site)) {
             return false;
         }
+        if (
+            (string) ($candidate['user'] ?? '') !== ''
+            || (string) ($candidate['pass'] ?? '') !== ''
+            || (string) ($site['user'] ?? '') !== ''
+            || (string) ($site['pass'] ?? '') !== ''
+        ) {
+            return false;
+        }
+        $candidateScheme = strtolower((string) ($candidate['scheme'] ?? ''));
+        $siteScheme = strtolower((string) ($site['scheme'] ?? ''));
+        if (!in_array($candidateScheme, array('http', 'https'), true) || !in_array($siteScheme, array('http', 'https'), true)) {
+            return false;
+        }
         $candidateHost = strtolower((string) ($candidate['host'] ?? ''));
         $siteHost = strtolower((string) ($site['host'] ?? ''));
-        $candidatePort = isset($candidate['port']) ? (int) $candidate['port'] : (((string) ($candidate['scheme'] ?? '')) === 'https' ? 443 : 80);
-        $sitePort = isset($site['port']) ? (int) $site['port'] : (((string) ($site['scheme'] ?? '')) === 'https' ? 443 : 80);
-        return $candidateHost !== '' && hash_equals($siteHost, $candidateHost) && $candidatePort === $sitePort;
+        $candidatePort = isset($candidate['port']) ? (int) $candidate['port'] : ($candidateScheme === 'https' ? 443 : 80);
+        $sitePort = isset($site['port']) ? (int) $site['port'] : ($siteScheme === 'https' ? 443 : 80);
+        return $candidateHost !== ''
+            && $siteHost !== ''
+            && hash_equals($siteScheme, $candidateScheme)
+            && hash_equals($siteHost, $candidateHost)
+            && $candidatePort === $sitePort;
     }
 
     private function appendEvent(int $postId, string $postType, string $operation, ?array $before, ?array $after): void
@@ -1102,12 +1120,57 @@ final class ContentChangeJournal
             $append($families, 'listing', $candidate !== '' ? $candidate : home_url('/' . ltrim((string) $listingPath, '/')));
         }
 
+        return $this->filterArchiveFamilies($families, array(
+            'postType' => $post->post_type,
+            'postId' => (int) $post->ID,
+            'blogId' => (int) get_current_blog_id(),
+            'terms' => $terms,
+        ));
+    }
+
+    /** Apply the site's archive routing contract to captured, not current, membership. */
+    private function filterArchiveFamilies(array $families, array $context): array
+    {
+        $filtered = apply_filters('smartcloud_static_publisher_content_archive_families', $families, $context);
         $deduplicated = array();
-        foreach ($families as $family) {
-            $key = (string) ($family['kind'] ?? '') . '|' . (string) ($family['url'] ?? '');
+        foreach (is_array($filtered) ? $filtered : $families as $rawFamily) {
+            $family = is_array($rawFamily) ? $this->sanitizeArchiveFamily($rawFamily) : null;
+            if ($family === null) {
+                continue;
+            }
+            $key = $family['blogId'] . '|' . $family['kind'] . '|' . $family['url'];
             $deduplicated[$key] = $family;
         }
         return array_values($deduplicated);
+    }
+
+    /** Historical events and stored before projections must use the same routing contract. */
+    private function filterProjectionArchiveFamilies(?array $projection, array $context): ?array
+    {
+        if ($projection === null || !isset($projection['archiveFamilies']) || !is_array($projection['archiveFamilies'])) {
+            return $projection;
+        }
+        $blogId = (int) $context['blogId'];
+        if (is_multisite() && get_site($blogId) === null) {
+            return $projection;
+        }
+        $switched = is_multisite() && $blogId !== get_current_blog_id() && switch_to_blog($blogId);
+        try {
+            $originalUrls = array_column($projection['archiveFamilies'], 'url');
+            // Preserve explicit archive URLs supplied by other projection providers.
+            $extraUrls = array_diff((array) ($projection['archives'] ?? array()), $originalUrls);
+            $context['terms'] = is_array($projection['terms'] ?? null) ? $projection['terms'] : array();
+            $projection['archiveFamilies'] = $this->filterArchiveFamilies($projection['archiveFamilies'], $context);
+            $projection['archives'] = array_values(array_unique(array_merge(
+                array_column($projection['archiveFamilies'], 'url'),
+                $extraUrls
+            )));
+            return $projection;
+        } finally {
+            if ($switched) {
+                restore_current_blog();
+            }
+        }
     }
 
     private function publicTermsForPost(\WP_Post $post): array
@@ -1129,6 +1192,7 @@ final class ContentChangeJournal
                 $out[] = array(
                     'taxonomy' => (string) $term->taxonomy,
                     'termId' => (int) $term->term_id,
+                    'slug' => (string) $term->slug,
                     'url' => is_string($termUrl) ? esc_url_raw($termUrl) : null,
                 );
             }
@@ -1158,6 +1222,7 @@ final class ContentChangeJournal
             $out[] = array(
                 'taxonomy' => $taxonomy,
                 'termId' => (int) $term->term_id,
+                'slug' => (string) $term->slug,
                 'url' => is_string($termUrl) ? esc_url_raw($termUrl) : null,
             );
         }
@@ -1297,6 +1362,14 @@ final class ContentChangeJournal
                 $after = $repaired;
             }
         }
+
+        $context = array(
+            'postType' => sanitize_key((string) ($row['post_type'] ?? '')),
+            'postId' => $postId,
+            'blogId' => $blogId,
+        );
+        $before = $this->filterProjectionArchiveFamilies($before, $context);
+        $after = $this->filterProjectionArchiveFamilies($after, $context);
 
         return array(
             'sequence' => $sequence,

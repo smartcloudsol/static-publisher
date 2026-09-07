@@ -9,9 +9,10 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/check.sh [--with-build]
 
-Runs the non-publishing Static Publisher quality gates. Add --with-build to
-also regenerate local dist outputs after the type, lint, and test checks pass.
-No WordPress ZIP or npm package is published by this script.
+Runs the non-publishing Static Publisher quality gates. The core package is
+built before its public-contract tests. Add --with-build to also regenerate
+the complete plugin dist outputs after the checks pass. No WordPress ZIP or
+npm package is published by this script.
 USAGE
 }
 
@@ -57,9 +58,12 @@ php -l "$PROJECT_ROOT/uninstall.php" >/dev/null
 php "$PROJECT_ROOT/tests/hub-runtime-contract.test.php"
 php "$PROJECT_ROOT/tests/content-sync-contract.test.php"
 php "$PROJECT_ROOT/tests/content-sync-post-types.test.php"
+php "$PROJECT_ROOT/tests/content-sync-archive-families.test.php"
 
 run_npm "$PROJECT_ROOT/core" run lint
 run_npm "$PROJECT_ROOT/core" exec -- tsc -p tsconfig.types.json --noEmit --declaration false --emitDeclarationOnly false
+run_npm "$PROJECT_ROOT/core" run build
+run_npm "$PROJECT_ROOT/core" test
 run_npm "$PROJECT_ROOT/exporter" run lint
 run_npm "$PROJECT_ROOT/exporter" run check
 run_npm "$PROJECT_ROOT/exporter" test
