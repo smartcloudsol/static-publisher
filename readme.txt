@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.16
+Stable tag: 1.0.17
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -503,6 +503,10 @@ SmartCloud Static Publisher is shipped to WordPress.org as a pre-built distribut
 Build steps and development notes are documented in the repository README.
 
 == Changelog ==
+
+= 1.0.17 =
+* Content sync: Finalize abandoned jobs after an exporter stops reporting, so queue state and operator feedback cannot remain stuck indefinitely.
+* Dependencies: Updated Publisher Core to 1.1.10, Publisher Admin to 1.0.12, and the bundled WP Suite Hub to 2.5.14 with the shared site translation catalog.
 
 = 1.0.16 =
 * Dependencies: Refresh Publisher Core and WP Suite Core, WordPress packages, JOSE, Mantine, and build tooling while retaining React 18 compatibility; production dependency audits are clean.
