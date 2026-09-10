@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.17
+Stable tag: 1.0.18
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -503,6 +503,10 @@ SmartCloud Static Publisher is shipped to WordPress.org as a pre-built distribut
 Build steps and development notes are documented in the repository README.
 
 == Changelog ==
+
+= 1.0.18 =
+* Privacy inventory: The exporter can record privacy-safe cookie metadata discovered during crawls in a separate review artifact without storing cookie values, visited URLs, timestamps, sources, or inferred purposes.
+* Dependencies: Bundled WP Suite Hub 2.5.15 with the Amplify preview.3 runtime that supplies the corrected Authenticator translations.
 
 = 1.0.17 =
 * Content sync: Finalize abandoned jobs after an exporter stops reporting, so queue state and operator feedback cannot remain stuck indefinitely.
