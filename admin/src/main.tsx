@@ -471,7 +471,7 @@ const DEFAULT_CONFIG: PublisherConfig = {
   noJavaScriptRenderPathPrefixes: [],
   seedPaths: ["/"],
   generated404RequestPath: "",
-  sitemapPaths: ["/sitemap_index.xml", "/sitemap.xml"],
+  sitemapPaths: ["/sitemap_index.xml", "/wp-sitemap.xml", "/sitemap.xml"],
   allowedAssetHosts: [],
   assetPathPrefixes: ["/wp-content/", "/wp-includes/", "/assets/"],
   blockedPathPrefixes: ["/wp-admin", "/wp-login.php", "/wp-json"],
@@ -1672,7 +1672,8 @@ function inferHasSavedConfig(
   const hasCustomPaths =
     config.seedPaths.length > 1 ||
     config.generated404RequestPath.trim() !== "" ||
-    config.sitemapPaths.join("\n") !== "/sitemap_index.xml\n/sitemap.xml";
+    config.sitemapPaths.join("\n") !==
+      "/sitemap_index.xml\n/wp-sitemap.xml\n/sitemap.xml";
 
   return hasInfraTarget || hasNonDefaultRewrite || hasCustomPaths;
 }

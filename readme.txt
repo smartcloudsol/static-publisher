@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.18
+Stable tag: 1.0.19
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -31,9 +31,9 @@ The plugin provides:
 
 The Node.js exporter provides:
 
-* Sitemap-based discovery
+* Sitemap-based discovery with ordered Yoast, WordPress core, and conventional fallbacks
 * Playwright rendering for JS-heavy pages
-* Asset capture from network + parsed sources
+* Asset capture from browser requests, parsed sources, and open Shadow DOM trees
 * Separate concurrency for page rendering, asset downloads, and final rewrite
 * URL rewriting modes (absolute, root-relative, relative)
 * Resumable targeted content sync with archive, sitemap, and tombstone reconciliation
@@ -504,6 +504,12 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.0.19 =
+* Sitemap discovery: Preserve administrator-defined root priority, add Yoast, WordPress core, and conventional fallback roots, and treat unavailable alternatives as optional while requiring every child sitemap declared by a resolved root.
+* Targeted content sync: Record resolved sitemap roots in each deploy plan, verify and invalidate only roots that were actually published, and remove sitemap artifacts that no longer resolve.
+* Incremental publishing: Discover assets from browser requests and open Shadow DOM trees, and defer deletion until an asset remains unreferenced for two consecutive complete incremental runs, preventing transient discovery gaps from removing shared component styles.
+* Dependencies: Updated the separately installed @smart-cloud/publisher-exporter runtime to 1.1.52.
+
 = 1.0.18 =
 * Privacy inventory: The exporter can record privacy-safe cookie metadata discovered during crawls in a separate review artifact without storing cookie values, visited URLs, timestamps, sources, or inferred purposes.
 * Dependencies: Bundled WP Suite Hub 2.5.15 with the Amplify preview.3 runtime that supplies the corrected Authenticator translations.
@@ -591,6 +597,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.19 =
+Install @smart-cloud/publisher-exporter 1.1.52 on every runner host, then complete one normal full or incremental publish to establish the new release baseline before resuming targeted content sync.
 
 = 1.0.16 =
 Sites with theme-specific taxonomy archives must install the matching theme routing integration, then run one successful normal full or incremental publish to establish the new release baseline. Existing content-sync retries retain their original impact plan; the successful normal publish supersedes it safely.

@@ -600,7 +600,7 @@ Example:
   "urlRewriteMode": "relative",
   "seedPaths": ["/"],
   "generated404RequestPath": "/not-found/preview/",
-  "sitemapPaths": ["/sitemap_index.xml", "/sitemap.xml"],
+  "sitemapPaths": ["/sitemap_index.xml", "/wp-sitemap.xml", "/sitemap.xml"],
   "allowedAssetHosts": ["wpsuite.local", "localhost"],
   "extraReplacements": {
     "https://dev.wpsuite.io": "https://wpsuite.io"

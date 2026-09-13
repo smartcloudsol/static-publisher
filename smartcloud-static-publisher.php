@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.0.18
+ * Version:           1.0.19
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.0.18';
+const VERSION = '1.0.19';
 
 final class Plugin
 {
@@ -258,7 +258,7 @@ final class Plugin
             'noJavaScriptRenderPathPrefixes' => $this->sanitizePathList($input['noJavaScriptRenderPathPrefixes'] ?? array()),
             'seedPaths' => $this->sanitizePathList($input['seedPaths'] ?? array()),
             'generated404RequestPath' => $this->sanitizeOptionalPublicPath($input['generated404RequestPath'] ?? ''),
-            'sitemapPaths' => $this->sanitizePathList($input['sitemapPaths'] ?? array('/sitemap_index.xml', '/sitemap.xml')),
+            'sitemapPaths' => $this->sanitizePathList($input['sitemapPaths'] ?? array('/sitemap_index.xml', '/wp-sitemap.xml', '/sitemap.xml')),
             'allowedAssetHosts' => $this->sanitizeHostList($input['allowedAssetHosts'] ?? array()),
             'assetPathPrefixes' => $this->sanitizePathList($input['assetPathPrefixes'] ?? array('/wp-content/', '/wp-includes/')),
             'blockedPathPrefixes' => $this->sanitizePathList($input['blockedPathPrefixes'] ?? array('/wp-admin', '/wp-login.php', '/wp-json')),
