@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.19
+Stable tag: 1.0.20
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -504,6 +504,11 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.0.20 =
+* Release coordination: Expose a versioned, read-only content journal and verified release contract so optional consumers such as AI Kit can wait until a public static release covers a content change.
+* Active target contract: Publisher Exporter 1.1.54 atomically reports the exact enabled content-sync rule and target consumers, preventing historical or removed targets from authorizing downstream delivery.
+* Compatibility: Static publishing remains independent; the release contract adds no required dependency and does not change existing crawl, deploy, invalidation, or content-sync behavior.
+
 = 1.0.19 =
 * Sitemap discovery: Preserve administrator-defined root priority, add Yoast, WordPress core, and conventional fallback roots, and treat unavailable alternatives as optional while requiring every child sitemap declared by a resolved root.
 * Targeted content sync: Record resolved sitemap roots in each deploy plan, verify and invalidate only roots that were actually published, and remove sitemap artifacts that no longer resolve.
@@ -597,6 +602,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.20 =
+AI Kit public release gating requires @smart-cloud/publisher-exporter 1.1.54. Install that exporter on the runner host, let the scheduler evaluate the saved content-sync rules, then complete one successful publish before enabling or expecting gated Knowledge Sync delivery. Existing Static Publisher workflows do not require AI Kit or this opt-in gate.
 
 = 1.0.19 =
 Install @smart-cloud/publisher-exporter 1.1.52 on every runner host, then complete one normal full or incremental publish to establish the new release baseline before resuming targeted content sync.

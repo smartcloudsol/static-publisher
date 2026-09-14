@@ -36,6 +36,13 @@ content_sync_expect(str_contains($journal, "'/content-sync/ack'"), 'The monotoni
 content_sync_expect(str_contains($journal, "'/content-sync/baseline'"), 'The verified release baseline endpoint must be registered.');
 content_sync_expect(str_contains($journal, "'/content-sync/impact'"), 'The archive impact endpoint must be registered.');
 content_sync_expect(str_contains($journal, "'/content-sync/fingerprint'"), 'The release fingerprint endpoint must be registered.');
+content_sync_expect(str_contains($journal, "'smartcloud_static_publisher_content_event_v1'"), 'Successful journal writes must expose a versioned post-event action.');
+content_sync_expect(str_contains($journal, "'smartcloud_static_publisher_public_release_v1'"), 'Verified baselines and acknowledgements must expose one versioned public-release action.');
+content_sync_expect(str_contains($journal, "'smartcloud_static_publisher_release_gate_state_v1'"), 'Release consumers need a versioned read-only provider state filter.');
+content_sync_expect(str_contains($journal, "'contractVersion' => 1"), 'Release-gate hook payloads must identify contract version 1.');
+content_sync_expect(str_contains($journal, "'lastPostEventSequence'"), 'Release-gate state must expose the latest journal sequence for a post context.');
+content_sync_expect(str_contains($journal, "'verifiedReleases'"), 'Release-gate state must expose durable verified release cursors.');
+content_sync_expect(str_contains($journal, "'configuredConsumerIds'"), 'Release-gate state must distinguish current configured consumers from historical cursors.');
 content_sync_expect(str_contains($journal, 'smartcloud_static_publisher_content_sync_consumers'), 'Consumer cursors must use dedicated durable storage.');
 content_sync_expect(str_contains($journal, "'expectedSequence'"), 'Consumer acknowledgement must require the expected committed cursor.');
 content_sync_expect(str_contains($journal, 'sequence = %d'), 'Conditional acknowledgement must compare the stored cursor.');

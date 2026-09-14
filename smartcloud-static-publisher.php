@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.0.19
+ * Version:           1.0.20
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.0.19';
+const VERSION = '1.0.20';
 
 final class Plugin
 {
@@ -3842,6 +3842,7 @@ final class Plugin
             'contentSyncImpactPlan' => trailingslashit($runtime) . 'content-sync-impact-plan.json',
             'contentSyncCheckpoint' => trailingslashit($runtime) . 'content-sync-checkpoint.json',
             'contentSyncBaseline' => trailingslashit($runtime) . 'content-sync-baseline.json',
+            'contentSyncActiveRules' => trailingslashit($runtime) . 'content-sync-active-rules.json',
             'contentSyncCandidateManifest' => trailingslashit($runtime) . 'content-sync-candidate-manifest.json',
             'contentSyncInvalidation' => trailingslashit($runtime) . 'content-sync-invalidation.json',
             'deployPlan' => trailingslashit($runtime) . 'deploy-plan.json',

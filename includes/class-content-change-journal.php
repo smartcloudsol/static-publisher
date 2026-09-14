@@ -21,6 +21,9 @@ final class ContentChangeJournal
     private const LAST_PUBLIC_PROJECTION_META = '_smartcloud_static_publisher_last_public_projection';
     private const LAST_PUBLIC_SLUG_META = '_smartcloud_static_publisher_last_public_slug';
     private const REST_NAMESPACE = 'smartcloud-static-publisher/v1';
+    private const CONTENT_EVENT_ACTION = 'smartcloud_static_publisher_content_event_v1';
+    private const PUBLIC_RELEASE_ACTION = 'smartcloud_static_publisher_public_release_v1';
+    private const RELEASE_GATE_STATE_FILTER = 'smartcloud_static_publisher_release_gate_state_v1';
 
     private Plugin $plugin;
 
@@ -29,6 +32,8 @@ final class ContentChangeJournal
 
     /** @var array<int, string> */
     private array $preRestoreSlugs = array();
+
+    private int $lastPostEventSequence = 0;
 
     public function __construct(Plugin $plugin)
     {
@@ -46,6 +51,38 @@ final class ContentChangeJournal
         add_action('update_option_sticky_posts', array($this, 'captureStickyChange'), 10, 3);
         add_action('add_option_sticky_posts', array($this, 'captureStickyAdd'), 10, 2);
         add_action('delete_option_sticky_posts', array($this, 'captureStickyDelete'), 10, 1);
+        add_filter(self::RELEASE_GATE_STATE_FILTER, array($this, 'provideReleaseGateState'), 10, 2);
+    }
+
+    /**
+     * Expose release-gate state without requiring another plugin to read the
+     * publisher's private journal tables.
+     *
+     * @param mixed $state State supplied by an earlier provider.
+     * @param mixed $query Optional consumerId/blogId/postType/postId selectors.
+     */
+    public function provideReleaseGateState($state = null, $query = array()): array
+    {
+        $query = is_array($query) ? $query : array();
+        $consumerId = $this->sanitizeConsumerId($query['consumerId'] ?? '');
+        $postType = sanitize_key((string) ($query['postType'] ?? ''));
+        $postId = absint($query['postId'] ?? 0);
+        $blogId = absint($query['blogId'] ?? get_current_blog_id());
+        $lastPostEventSequence = $this->lastPostEventSequence;
+        if ($blogId > 0 && $postType !== '' && $postId > 0) {
+            $lastPostEventSequence = $this->latestPostEventSequence($blogId, $postType, $postId);
+        }
+
+        $providerState = array(
+            'contractVersion' => 1,
+            'provider' => 'smartcloud-static-publisher',
+            'available' => true,
+            'lastPostEventSequence' => $lastPostEventSequence,
+            'configuredConsumerIds' => $this->configuredConsumerIds(),
+            'verifiedReleases' => $this->readVerifiedReleases($consumerId),
+        );
+
+        return is_array($state) ? array_merge($state, $providerState) : $providerState;
     }
 
     public function registerRestRoutes(): void
@@ -476,6 +513,17 @@ final class ContentChangeJournal
         if ($updated !== 1 && $sequence !== $expectedSequence) {
             return $this->errorResponse('cursor-conflict', __('The content-sync cursor was updated concurrently.', 'smartcloud-static-publisher'), 409);
         }
+        if ($updated === 1) {
+            $this->emitPublicRelease(
+                'acknowledgement',
+                $consumerId,
+                $scopeFingerprint,
+                $baselineId,
+                $sequence,
+                $postTypes,
+                $includeSubsites
+            );
+        }
 
         return new \WP_REST_Response(array(
             'success' => true,
@@ -528,6 +576,15 @@ final class ContentChangeJournal
         if ($result === false) {
             return $this->errorResponse('baseline-write-failed', __('The verified content-sync baseline could not be stored.', 'smartcloud-static-publisher'), 500);
         }
+        $this->emitPublicRelease(
+            'baseline',
+            $consumerId,
+            $scopeFingerprint,
+            $baselineId,
+            $sequence,
+            $postTypes,
+            $includeSubsites
+        );
 
         return new \WP_REST_Response(array(
             'success' => true,
@@ -917,21 +974,60 @@ final class ContentChangeJournal
         global $wpdb;
 
         $this->maybeInstallSchema();
+        $blogId = (int) get_current_blog_id();
+        $postType = sanitize_key($postType);
+        $operation = sanitize_key($operation);
         $correlationId = apply_filters('smartcloud_static_publisher_content_correlation_id', '', $postId, $operation);
-        $wpdb->insert(
+        $inserted = $wpdb->insert(
             $this->tableName(),
             array(
-                'blog_id' => get_current_blog_id(),
+                'blog_id' => $blogId,
                 'recorded_gmt' => current_time('mysql', true),
                 'post_id' => $postId,
-                'post_type' => sanitize_key($postType),
-                'operation' => sanitize_key($operation),
+                'post_type' => $postType,
+                'operation' => $operation,
                 'before_projection' => $before === null ? null : wp_json_encode($before),
                 'after_projection' => $after === null ? null : wp_json_encode($after),
                 'correlation_id' => $this->sanitizeCorrelationId($correlationId),
             ),
             array('%d', '%s', '%d', '%s', '%s', '%s', '%s', '%s')
         );
+        $sequence = max(0, (int) ($wpdb->insert_id ?? 0));
+        if ($inserted === false || $sequence < 1) {
+            return;
+        }
+
+        $this->lastPostEventSequence = $sequence;
+        do_action(self::CONTENT_EVENT_ACTION, array(
+            'contractVersion' => 1,
+            'sequence' => $sequence,
+            'blogId' => $blogId,
+            'postId' => $postId,
+            'postType' => $postType,
+            'operation' => $operation,
+        ));
+    }
+
+    private function emitPublicRelease(
+        string $releaseType,
+        string $consumerId,
+        string $scopeFingerprint,
+        string $baselineId,
+        int $committedSequence,
+        array $postTypes,
+        bool $includeSubsites
+    ): void {
+        do_action(self::PUBLIC_RELEASE_ACTION, array(
+            'contractVersion' => 1,
+            'releaseType' => $releaseType,
+            'consumerId' => $consumerId,
+            'rootBlogId' => (int) get_current_blog_id(),
+            'scopeFingerprint' => $scopeFingerprint,
+            'baselineId' => $baselineId,
+            'committedSequence' => max(0, $committedSequence),
+            'postTypes' => array_values($postTypes),
+            'includeSubsites' => $includeSubsites,
+        ));
     }
 
     private function latestPublicProjection(int $postId): ?array
@@ -1455,6 +1551,111 @@ final class ContentChangeJournal
         if (!is_array($row)) {
             return null;
         }
+        return $this->hydrateConsumerRow($row);
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function readVerifiedReleases(string $consumerId = ''): array
+    {
+        global $wpdb;
+        $this->maybeInstallSchema();
+        $where = '';
+        if ($consumerId !== '') {
+            $where = $wpdb->prepare(' WHERE consumer_id = %s', $consumerId);
+        }
+        $rows = $wpdb->get_results(
+            "SELECT consumer_id, root_blog_id, include_subsites, scope_fingerprint, baseline_id, sequence, post_types, acknowledged_gmt
+             FROM {$this->consumersTableName()}{$where} ORDER BY consumer_id ASC",
+            ARRAY_A
+        );
+
+        return array_values(array_map(function (array $row): array {
+            $consumer = $this->hydrateConsumerRow($row);
+            $consumer['committedSequence'] = $consumer['sequence'];
+            unset($consumer['sequence']);
+            return $consumer;
+        }, is_array($rows) ? $rows : array()));
+    }
+
+    private function latestPostEventSequence(int $blogId, string $postType, int $postId): int
+    {
+        global $wpdb;
+        $this->maybeInstallSchema();
+        return max(0, (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT MAX(sequence) FROM {$this->tableName()} WHERE blog_id = %d AND post_type = %s AND post_id = %d",
+            $blogId,
+            $postType,
+            $postId
+        )));
+    }
+
+    /** @return array<int, string> */
+    private function configuredConsumerIds(): array
+    {
+        if (!isset($this->plugin)) {
+            return array();
+        }
+        $paths = $this->plugin->getRuntimePaths();
+        $snapshot = $this->plugin->readJsonFile((string) ($paths['contentSyncActiveRules'] ?? ''));
+        $state = $this->plugin->readJsonFile((string) ($paths['contentSyncState'] ?? ''));
+        $baselines = $this->plugin->readJsonFile((string) ($paths['contentSyncBaseline'] ?? ''));
+        if (
+            !is_array($snapshot)
+            || (int) ($snapshot['contractVersion'] ?? 0) !== 1
+            || !isset($snapshot['entries'])
+            || !is_array($snapshot['entries'])
+        ) {
+            return array();
+        }
+
+        $stateRules = is_array($state) && is_array($state['rules'] ?? null) ? $state['rules'] : array();
+        $baselineEntries = is_array($baselines) && is_array($baselines['entries'] ?? null) ? $baselines['entries'] : array();
+        $consumerIds = array();
+        foreach ($snapshot['entries'] as $activeRule) {
+            if (!is_array($activeRule)) {
+                continue;
+            }
+            $ruleId = sanitize_text_field((string) ($activeRule['ruleId'] ?? ''));
+            $coalesceKey = sanitize_text_field((string) ($activeRule['coalesceKey'] ?? ''));
+            $consumerId = $this->sanitizeConsumerId($activeRule['consumerId'] ?? '');
+            if ($ruleId === '' || $coalesceKey === '' || $consumerId === '') {
+                continue;
+            }
+            $matchesRuntime = $this->runtimeReleaseEntryMatches(
+                $stateRules[$coalesceKey] ?? null,
+                $ruleId,
+                $coalesceKey,
+                $consumerId
+            ) || $this->runtimeReleaseEntryMatches(
+                $baselineEntries[$coalesceKey] ?? null,
+                $ruleId,
+                $coalesceKey,
+                $consumerId
+            );
+            if ($matchesRuntime) {
+                $consumerIds[] = $consumerId;
+            }
+        }
+
+        $consumerIds = array_values(array_unique($consumerIds));
+        sort($consumerIds, SORT_STRING);
+        return $consumerIds;
+    }
+
+    private function runtimeReleaseEntryMatches(
+        $entry,
+        string $ruleId,
+        string $coalesceKey,
+        string $consumerId
+    ): bool {
+        return is_array($entry)
+            && hash_equals($ruleId, (string) ($entry['ruleId'] ?? ''))
+            && hash_equals($coalesceKey, (string) ($entry['coalesceKey'] ?? ''))
+            && hash_equals($consumerId, $this->sanitizeConsumerId($entry['consumerId'] ?? ''));
+    }
+
+    private function hydrateConsumerRow(array $row): array
+    {
         $postTypes = json_decode((string) ($row['post_types'] ?? '[]'), true);
         return array(
             'consumerId' => (string) ($row['consumer_id'] ?? ''),
