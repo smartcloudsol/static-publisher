@@ -60,6 +60,7 @@ php "$PROJECT_ROOT/tests/content-sync-contract.test.php"
 php "$PROJECT_ROOT/tests/content-sync-post-types.test.php"
 php "$PROJECT_ROOT/tests/content-sync-archive-families.test.php"
 php "$PROJECT_ROOT/tests/release-gate-provider.test.php"
+php "$PROJECT_ROOT/tests/remote-workers-config.test.php"
 
 run_npm "$PROJECT_ROOT/core" run lint
 run_npm "$PROJECT_ROOT/core" exec -- tsc -p tsconfig.types.json --noEmit --declaration false --emitDeclarationOnly false

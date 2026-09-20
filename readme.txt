@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.20
+Stable tag: 1.0.21
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -504,6 +504,14 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.0.21 =
+* Privacy inventory: Authenticated exporter jobs submit the privacy-minimal cookie observation artifact to installed Consent providers for manual classification.
+* Targeted content sync: Add exact render and tombstone operations for plugin-owned public resources such as Content Relations JSON projections.
+* Lambda workers: Delegate page rendering, text rewriting, and S3 deployment to independently configurable Lambda workers, with live phase progress in the WordPress admin.
+* Lambda deploy visibility: Keep staging, target-copy, and deletion progress separate, and record every completed remote batch plus per-object debug results in the local deploy log.
+* Runtime contract: Load the CDK-generated remote-workers.json, including allowlisted deployment targets, from the site's Static Publisher runtime directory without storing a host-specific path.
+* Dependencies: Requires the separately installed @smart-cloud/publisher-exporter 1.1.62 runtime for these integrations.
+
 = 1.0.20 =
 * Release coordination: Expose a versioned, read-only content journal and verified release contract so optional consumers such as AI Kit can wait until a public static release covers a content change.
 * Active target contract: Publisher Exporter 1.1.54 atomically reports the exact enabled content-sync rule and target consumers, preventing historical or removed targets from authorizing downstream delivery.
@@ -602,6 +610,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.21 =
+Install @smart-cloud/publisher-exporter 1.1.62 on every runner host. Before enabling Lambda rendering, rewriting, or deployment, redeploy the CDK stack and copy its newly generated remote-workers.json to the site's Static Publisher runtime directory; existing files without deployment targets are insufficient for delegated deploys. Remove obsolete PUBLISHER_REMOTE_* variables from cron. Run a crawl or publish to populate Consent candidates, and run one normal publish before relying on targeted plugin-resource updates.
 
 = 1.0.20 =
 AI Kit public release gating requires @smart-cloud/publisher-exporter 1.1.54. Install that exporter on the runner host, let the scheduler evaluate the saved content-sync rules, then complete one successful publish before enabling or expecting gated Knowledge Sync delivery. Existing Static Publisher workflows do not require AI Kit or this opt-in gate.

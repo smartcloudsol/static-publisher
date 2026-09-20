@@ -483,6 +483,48 @@ const pages = {
         )}
       </Text>
 
+      <Title order={3} mt="md" id="remote-render-enabled">
+        <span className="highlightable">
+          {__("Lambda Workers", TEXT_DOMAIN)}
+        </span>
+      </Title>
+      <Text>
+        {__(
+          "Moves Playwright rendering, final text rewrite, and S3 deployment to independently configurable Lambda workers while the EC2 exporter remains the lightweight coordinator.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+      <Text mt="xs">
+        {__(
+          "Before enabling a remote phase, install the CDK-generated remote-workers.json file in this site's Static Publisher runtime directory. An enabled phase fails explicitly if its worker or result is unavailable; it never falls back silently to local execution.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+
+      <Title order={3} mt="md" id="remote-render-concurrency">
+        <span className="highlightable">
+          {__("Lambda Render Concurrency", TEXT_DOMAIN)}
+        </span>
+      </Title>
+      <Text>
+        {__(
+          "Maximum page-render Lambda invocations coordinated in parallel. When Lambda rendering is enabled this value replaces the normal crawl concurrency; asset download and rewrite concurrency remain independent.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+
+      <Title order={3} mt="md" id="remote-render-max-attempts">
+        <span className="highlightable">
+          {__("Lambda Render Attempts", TEXT_DOMAIN)}
+        </span>
+      </Title>
+      <Text>
+        {__(
+          "Maximum attempts for each remotely rendered page, including the first invocation. Keep this low so persistent origin or worker failures finish predictably.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+
       <Title order={3} mt="md" id="max-pages">
         <span className="highlightable">{__("Max Pages", TEXT_DOMAIN)}</span>
       </Title>

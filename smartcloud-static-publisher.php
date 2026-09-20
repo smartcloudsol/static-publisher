@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.0.20
+ * Version:           1.0.21
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.0.20';
+const VERSION = '1.0.21';
 
 final class Plugin
 {
@@ -284,6 +284,29 @@ final class Plugin
             'concurrency' => max(1, absint($input['concurrency'] ?? 1)),
             'assetDownloadConcurrency' => max(1, absint($input['assetDownloadConcurrency'] ?? ($input['concurrency'] ?? 1))),
             'rewriteConcurrency' => max(1, absint($input['rewriteConcurrency'] ?? ($input['assetDownloadConcurrency'] ?? ($input['concurrency'] ?? 1)))),
+            'remoteWorkers' => array(
+                'render' => array(
+                    'enabled' => !empty($input['remoteWorkers']['render']['enabled']),
+                    'concurrency' => min(100, max(1, absint($input['remoteWorkers']['render']['concurrency'] ?? ($input['concurrency'] ?? 1)))),
+                    'maxAttempts' => min(5, max(1, absint($input['remoteWorkers']['render']['maxAttempts'] ?? 2))),
+                ),
+                'rewrite' => array(
+                    'enabled' => array_key_exists('enabled', $input['remoteWorkers']['rewrite'] ?? array())
+                        ? !empty($input['remoteWorkers']['rewrite']['enabled'])
+                        : !empty($input['remoteWorkers']['render']['enabled']),
+                    'concurrency' => min(100, max(1, absint($input['remoteWorkers']['rewrite']['concurrency'] ?? ($input['rewriteConcurrency'] ?? 8)))),
+                    'batchSize' => min(500, max(1, absint($input['remoteWorkers']['rewrite']['batchSize'] ?? 25))),
+                    'maxAttempts' => min(5, max(1, absint($input['remoteWorkers']['rewrite']['maxAttempts'] ?? 2))),
+                ),
+                'deploy' => array(
+                    'enabled' => array_key_exists('enabled', $input['remoteWorkers']['deploy'] ?? array())
+                        ? !empty($input['remoteWorkers']['deploy']['enabled'])
+                        : !empty($input['remoteWorkers']['render']['enabled']),
+                    'concurrency' => min(100, max(1, absint($input['remoteWorkers']['deploy']['concurrency'] ?? 8))),
+                    'batchSize' => min(500, max(1, absint($input['remoteWorkers']['deploy']['batchSize'] ?? 50))),
+                    'maxAttempts' => min(5, max(1, absint($input['remoteWorkers']['deploy']['maxAttempts'] ?? 2))),
+                ),
+            ),
             's3' => array(
                 'bucket' => sanitize_text_field((string) ($input['s3']['bucket'] ?? '')),
                 'prefix' => $this->sanitizePathToken($input['s3']['prefix'] ?? ''),
@@ -1016,7 +1039,11 @@ final class Plugin
          * @param array<string, mixed>|null $data File-backed token data.
          * @param string                    $url  Normalized public URL.
          */
-        $data = apply_filters('smartcloud_static_publisher_file_change_token_data', null, $url);
+        $data = apply_filters('smartcloud_static_publisher_resource_change_token_data', null, $url);
+        if (!is_array($data)) {
+            // Backward compatibility for existing file-backed providers.
+            $data = apply_filters('smartcloud_static_publisher_file_change_token_data', null, $url);
+        }
         if (!is_array($data)) {
             return null;
         }
@@ -3824,6 +3851,7 @@ final class Plugin
         return array(
             'runtime' => $runtime,
             'config' => trailingslashit($runtime) . 'config.json',
+            'remoteWorkers' => trailingslashit($runtime) . 'remote-workers.json',
             'manifest' => trailingslashit($runtime) . 'manifest.json',
             'lock' => trailingslashit($runtime) . 'export.lock',
             'queueMutationLock' => trailingslashit($runtime) . 'queue-mutation.lock',

@@ -51,7 +51,56 @@ final class ContentChangeJournal
         add_action('update_option_sticky_posts', array($this, 'captureStickyChange'), 10, 3);
         add_action('add_option_sticky_posts', array($this, 'captureStickyAdd'), 10, 2);
         add_action('delete_option_sticky_posts', array($this, 'captureStickyDelete'), 10, 1);
+        add_action('smartcloud_static_publisher_resource_changed_v1', array($this, 'captureResourceChange'), 10, 1);
         add_filter(self::RELEASE_GATE_STATE_FILTER, array($this, 'provideReleaseGateState'), 10, 2);
+    }
+
+    public function captureResourceChange($change): void
+    {
+        if (!is_array($change)) {
+            return;
+        }
+        $blogId = absint($change['blogId'] ?? get_current_blog_id());
+        $postId = absint($change['postId'] ?? 0);
+        if ($blogId !== get_current_blog_id()) {
+            return;
+        }
+        $post = $postId > 0 ? get_post($postId) : null;
+        if ($post instanceof \WP_Post && !$this->isJournalPostType($post->post_type)) return;
+        $sanitizeUrls = function ($values): array {
+            $urls = array();
+            foreach (is_array($values) ? $values : array() as $value) {
+                $url = esc_url_raw((string) $value, array('http', 'https'));
+                if ($url !== '' && $this->isSameSiteUrl($url)) {
+                    $urls[] = $url;
+                }
+            }
+            $urls = array_values(array_unique($urls));
+            sort($urls, SORT_STRING);
+            return $urls;
+        };
+        $renderUrls = $sanitizeUrls($change['renderUrls'] ?? array());
+        $deleteUrls = $sanitizeUrls($change['deleteUrls'] ?? array());
+        if (!$renderUrls && !$deleteUrls) {
+            return;
+        }
+        $base = $post instanceof \WP_Post ? $this->buildProjection($post) : array(
+            'blogId' => (int) get_current_blog_id(), 'status' => 'resource', 'url' => null,
+            'authorId' => 0, 'publishedGmt' => null, 'modifiedGmt' => null,
+            'terms' => array(), 'sticky' => false, 'archives' => array(), 'archiveFamilies' => array(),
+        );
+        $before = $base;
+        $after = $deleteUrls && !$renderUrls ? null : $base;
+        if ($deleteUrls) {
+            $before['resourceDeleteUrls'] = $deleteUrls;
+        }
+        if ($renderUrls) {
+            if (!is_array($after)) {
+                $after = $base;
+            }
+            $after['resourceRenderUrls'] = $renderUrls;
+        }
+        $this->appendEvent($postId, $post instanceof \WP_Post ? $post->post_type : 'resource', 'resource', $before, $after);
     }
 
     /**
@@ -117,6 +166,33 @@ final class ContentChangeJournal
             'permission_callback' => array($this, 'canAccessRuntime'),
             'callback' => array($this, 'handleReleaseFingerprint'),
         ));
+        register_rest_route(self::REST_NAMESPACE, '/privacy/cookie-observations', array(
+            'methods' => 'POST',
+            'permission_callback' => array($this, 'canAccessRuntime'),
+            'callback' => array($this, 'handleCookieObservations'),
+        ));
+    }
+
+    public function handleCookieObservations(\WP_REST_Request $request)
+    {
+        $payload = $request->get_json_params();
+        if (!is_array($payload) || (int) ($payload['schemaVersion'] ?? 0) !== 1 || !is_array($payload['observations'] ?? null)) {
+            return $this->errorResponse('invalid-cookie-observations', __('The cookie observation artifact is invalid.', 'smartcloud-static-publisher'), 400);
+        }
+        $result = apply_filters('smartcloud_static_publisher_cookie_observations_v1', null, $payload);
+        if (is_wp_error($result)) {
+            $errorData = $result->get_error_data();
+            $status = is_array($errorData) ? (int) ($errorData['status'] ?? 400) : 400;
+            return $this->errorResponse($result->get_error_code(), $result->get_error_message(), $status);
+        }
+        if (!is_array($result)) {
+            return new \WP_REST_Response(array('accepted' => false, 'provider' => null, 'pendingCount' => 0), 200);
+        }
+        return new \WP_REST_Response(array(
+            'accepted' => true,
+            'provider' => 'smartcloud-consent',
+            'pendingCount' => max(0, (int) ($result['pendingCount'] ?? count((array) ($result['pendingObservations'] ?? array())))),
+        ), 200);
     }
 
     public function canAccessRuntime(\WP_REST_Request $request): bool
@@ -436,7 +512,7 @@ final class ContentChangeJournal
         }
         $limit = min(250, max(1, (int) ($data['limit'] ?? 100)));
         $placeholders = implode(', ', array_fill(0, count($postTypes), '%s'));
-        $where = "post_type IN ({$placeholders})";
+        $where = "(post_type IN ({$placeholders}) OR operation = 'resource')";
         $params = $postTypes;
         if (!$includeSubsites) {
             $where .= ' AND blog_id = %d';
@@ -1425,7 +1501,7 @@ final class ContentChangeJournal
         global $wpdb;
         $this->maybeInstallSchema();
         $placeholders = implode(', ', array_fill(0, count($postTypes), '%s'));
-        $where = "post_type IN ({$placeholders})";
+        $where = "(post_type IN ({$placeholders}) OR operation = 'resource')";
         $params = $postTypes;
         if (!$includeSubsites) {
             $where .= ' AND blog_id = %d';

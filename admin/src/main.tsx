@@ -78,6 +78,19 @@ function switchControlStyles(disabled = false): Record<string, CSSProperties> {
   };
 }
 
+function alignedTextInputStyles(): Record<string, CSSProperties> {
+  return {
+    root: {
+      display: "flex",
+      flexDirection: "column",
+      height: "100%",
+    },
+    wrapper: {
+      marginTop: "auto",
+    },
+  };
+}
+
 type RewriteMode = "absolute" | "root-relative" | "relative";
 type LogLevel = "error" | "warn" | "info" | "debug";
 type S3SyncMode = "sdk-upload-delete" | "sdk-upload-only";
@@ -276,6 +289,25 @@ type PublisherConfig = {
   concurrency: number;
   assetDownloadConcurrency: number;
   rewriteConcurrency: number;
+  remoteWorkers: {
+    render: {
+      enabled: boolean;
+      concurrency: number;
+      maxAttempts: number;
+    };
+    rewrite: {
+      enabled: boolean;
+      concurrency: number;
+      batchSize: number;
+      maxAttempts: number;
+    };
+    deploy: {
+      enabled: boolean;
+      concurrency: number;
+      batchSize: number;
+      maxAttempts: number;
+    };
+  };
   maxPages: number;
   verbose: boolean;
   logLevel: LogLevel;
@@ -413,11 +445,7 @@ type LoadStateOptions = {
 };
 
 type AdminTab =
-  | "jobs"
-  | "configuration"
-  | "audit"
-  | "scheduler"
-  | "extraTargets";
+  "jobs" | "configuration" | "audit" | "scheduler" | "extraTargets";
 
 type AuditArtifact = {
   id: string;
@@ -488,6 +516,25 @@ const DEFAULT_CONFIG: PublisherConfig = {
   concurrency: 1,
   assetDownloadConcurrency: 1,
   rewriteConcurrency: 1,
+  remoteWorkers: {
+    render: {
+      enabled: false,
+      concurrency: 4,
+      maxAttempts: 2,
+    },
+    rewrite: {
+      enabled: false,
+      concurrency: 8,
+      batchSize: 25,
+      maxAttempts: 2,
+    },
+    deploy: {
+      enabled: false,
+      concurrency: 8,
+      batchSize: 50,
+      maxAttempts: 2,
+    },
+  },
   maxPages: 0,
   verbose: false,
   logLevel: "info",
@@ -678,6 +725,35 @@ function normalizePublisherConfig(config: PublisherConfig): PublisherConfig {
     1,
     Number(config.rewriteConcurrency || assetDownloadConcurrency),
   );
+  const remoteRender = config.remoteWorkers?.render;
+  const remoteRenderConcurrency = Math.min(
+    100,
+    Math.max(1, Number(remoteRender?.concurrency || concurrency)),
+  );
+  const remoteRenderMaxAttempts = Math.min(
+    5,
+    Math.max(1, Number(remoteRender?.maxAttempts || 2)),
+  );
+  const remoteRewrite = config.remoteWorkers?.rewrite;
+  const remoteDeploy = config.remoteWorkers?.deploy;
+  const normalizeRemotePhase = (
+    phase: typeof remoteRewrite,
+    defaults: { concurrency: number; batchSize: number },
+  ) => ({
+    enabled:
+      typeof phase?.enabled === "boolean"
+        ? phase.enabled
+        : remoteRender?.enabled === true,
+    concurrency: Math.min(
+      100,
+      Math.max(1, Number(phase?.concurrency || defaults.concurrency)),
+    ),
+    batchSize: Math.min(
+      500,
+      Math.max(1, Number(phase?.batchSize || defaults.batchSize)),
+    ),
+    maxAttempts: Math.min(5, Math.max(1, Number(phase?.maxAttempts || 2))),
+  });
 
   return {
     ...config,
@@ -685,6 +761,21 @@ function normalizePublisherConfig(config: PublisherConfig): PublisherConfig {
     concurrency,
     assetDownloadConcurrency,
     rewriteConcurrency,
+    remoteWorkers: {
+      render: {
+        enabled: remoteRender?.enabled === true,
+        concurrency: remoteRenderConcurrency,
+        maxAttempts: remoteRenderMaxAttempts,
+      },
+      rewrite: normalizeRemotePhase(remoteRewrite, {
+        concurrency: rewriteConcurrency,
+        batchSize: 25,
+      }),
+      deploy: normalizeRemotePhase(remoteDeploy, {
+        concurrency: 8,
+        batchSize: 50,
+      }),
+    },
     scheduler,
     defaultDeploymentProfile: "",
     deploymentProfiles,
@@ -1275,14 +1366,25 @@ function buildStableCurrentProgress(
 
   if (stepName === "deploy") {
     const total = readProgressNumber(details, "totalFiles");
-    const uploaded =
-      readProgressNumber(details, "uploaded") ??
-      readProgressNumber(details, "index");
+    const phase = readProgressString(details, "phase");
+    const isStaging = phase === "deploy-stage";
+    const isRemoteCopy = phase === "deploy-copy";
+    const isDeleting = phase === "deploy-delete";
+    const uploaded = readProgressNumber(details, "uploaded") ?? 0;
+    const index = readProgressNumber(details, "index");
+    const staged = readProgressNumber(details, "staged") ?? index;
+    const skipped = readProgressNumber(details, "skipped") ?? 0;
     const failed = readProgressNumber(details, "failed") ?? 0;
+    const deleted = readProgressNumber(details, "deleted") ?? 0;
+    const completedBatches = readProgressNumber(details, "completedBatches");
+    const totalBatches = readProgressNumber(details, "totalBatches");
     const elapsedSec = readProgressNumber(details, "elapsedSec");
     const mode = readProgressString(details, "mode").replace(/[-_]+/g, " ");
-    const attempted =
-      typeof uploaded === "number" ? uploaded + failed : undefined;
+    const attempted = isStaging
+      ? staged
+      : isDeleting
+        ? (index ?? deleted)
+        : (index ?? uploaded + skipped + failed);
     const percent =
       typeof attempted === "number" && typeof total === "number" && total > 0
         ? Math.min(100, Math.max(0, (attempted / total) * 100))
@@ -1290,22 +1392,45 @@ function buildStableCurrentProgress(
     const stepElapsed = formatDurationShort(progress?.stepElapsedSec);
     const totalElapsed = formatDurationShort(progress?.totalElapsedSec);
 
+    const progressLabel = isStaging
+      ? "Deploy staging"
+      : isRemoteCopy
+        ? "Target deployment"
+        : isDeleting
+          ? "Target cleanup"
+          : "Deploy progress";
     const message =
       typeof attempted === "number" && typeof total === "number"
-        ? `Deploy progress: ${attempted}/${total} (${percent?.toFixed(1)}%)`
+        ? `${progressLabel}: ${attempted}/${total} (${percent?.toFixed(1)}%)`
         : typeof elapsedSec === "number"
-        ? `Deploy in progress (${elapsedSec}s)`
-        : "Deploy in progress";
+          ? `Deploy in progress (${elapsedSec}s)`
+          : "Deploy in progress";
 
     const detailParts: string[] = [];
-    if (typeof uploaded === "number") {
-      detailParts.push(`Uploaded: ${uploaded}`);
+    if (isStaging && typeof staged === "number") {
+      detailParts.push(`Staged: ${staged}`);
+    } else if (isDeleting) {
+      detailParts.push(`Deleted: ${deleted}`);
+    } else {
+      detailParts.push(`${isRemoteCopy ? "Copied" : "Uploaded"}: ${uploaded}`);
+    }
+    if (!isStaging && !isDeleting && skipped > 0) {
+      detailParts.push(`Skipped: ${skipped}`);
     }
     if (typeof failed === "number") {
       detailParts.push(`Failed: ${failed}`);
     }
     if (typeof total === "number" && typeof attempted === "number") {
       detailParts.push(`Remaining: ${Math.max(0, total - attempted)}`);
+    }
+    if (
+      isRemoteCopy &&
+      typeof completedBatches === "number" &&
+      typeof totalBatches === "number"
+    ) {
+      detailParts.push(
+        `Remote batches completed: ${completedBatches}/${totalBatches}`,
+      );
     }
     if (mode !== "") {
       detailParts.push(`Mode: ${mode}`);
@@ -1327,16 +1452,23 @@ function buildStableCurrentProgress(
       progress?.stepDurationsSec?.invalidate,
     );
 
-    const summary =
-      typeof uploaded === "number" && typeof failed === "number"
-        ? `Uploaded ${uploaded} file(s), failed ${failed}.${
-            crawlDuration || deployDuration || invalidateDuration
-              ? ` Step durations - crawl: ${crawlDuration || "-"}, deploy: ${
-                  deployDuration || "-"
-                }, invalidate: ${invalidateDuration || "-"}.`
-              : ""
-          }`
-        : "";
+    const summary = isStaging
+      ? ""
+      : isDeleting && typeof attempted === "number" && typeof total === "number"
+        ? `Deleted ${attempted}/${total} obsolete target file(s).`
+        : isRemoteCopy &&
+            typeof attempted === "number" &&
+            typeof total === "number"
+          ? `Received ${attempted}/${total} Lambda result(s): copied ${uploaded}, skipped ${skipped}, failed ${failed}.`
+          : typeof uploaded === "number" && typeof failed === "number"
+            ? `Uploaded ${uploaded} file(s), failed ${failed}.${
+                crawlDuration || deployDuration || invalidateDuration
+                  ? ` Step durations - crawl: ${crawlDuration || "-"}, deploy: ${
+                      deployDuration || "-"
+                    }, invalidate: ${invalidateDuration || "-"}.`
+                  : ""
+              }`
+            : "";
 
     return {
       message,
@@ -2581,7 +2713,7 @@ export default function Main({ store }: MainProps) {
         currentSelectedLog &&
         normalizedState.availableLogs.includes(currentSelectedLog)
           ? currentSelectedLog
-          : normalizedState.availableLogs[0] ?? "";
+          : (normalizedState.availableLogs[0] ?? "");
 
       if (nextSelectedLog !== currentSelectedLog) {
         selectedLogRef.current = nextSelectedLog;
@@ -2757,10 +2889,10 @@ export default function Main({ store }: MainProps) {
     currentRunStatus === "running"
       ? "blue"
       : currentRunStatus === "failed"
-      ? "red"
-      : currentRunStatus === "success"
-      ? "green"
-      : "gray";
+        ? "red"
+        : currentRunStatus === "success"
+          ? "green"
+          : "gray";
   const hasAnyLogs = (state?.availableLogs?.length ?? 0) > 0;
   const waitingForQueuedLogs =
     !hasAnyLogs &&
@@ -3702,6 +3834,7 @@ export default function Main({ store }: MainProps) {
                               TEXT_DOMAIN,
                             )}
                             type="number"
+                            styles={alignedTextInputStyles()}
                             value={String(config.concurrency)}
                             onChange={(event) =>
                               setConfig((prev) => ({
@@ -3722,6 +3855,7 @@ export default function Main({ store }: MainProps) {
                               TEXT_DOMAIN,
                             )}
                             type="number"
+                            styles={alignedTextInputStyles()}
                             value={String(config.assetDownloadConcurrency)}
                             onChange={(event) =>
                               setConfig((prev) => ({
@@ -3742,6 +3876,7 @@ export default function Main({ store }: MainProps) {
                               TEXT_DOMAIN,
                             )}
                             type="number"
+                            styles={alignedTextInputStyles()}
                             value={String(config.rewriteConcurrency)}
                             onChange={(event) =>
                               setConfig((prev) => ({
@@ -3753,6 +3888,350 @@ export default function Main({ store }: MainProps) {
                                 ),
                               }))
                             }
+                          />
+                        </SimpleGrid>
+                        <Divider
+                          label={__("Lambda rendering", TEXT_DOMAIN)}
+                          labelPosition="left"
+                        />
+                        <Switch
+                          label={infoLabel(
+                            __(
+                              "Delegate page rendering to Lambda",
+                              TEXT_DOMAIN,
+                            ),
+                            "remote-render-enabled",
+                          )}
+                          description={__(
+                            "Requires the CDK-generated remote-workers.json file in this site's Static Publisher runtime directory. Rendering never falls back silently to local Playwright.",
+                            TEXT_DOMAIN,
+                          )}
+                          checked={config.remoteWorkers.render.enabled}
+                          onChange={(event) =>
+                            setConfig((prev) => ({
+                              ...prev,
+                              remoteWorkers: {
+                                ...prev.remoteWorkers,
+                                render: {
+                                  ...prev.remoteWorkers.render,
+                                  enabled: event.currentTarget.checked,
+                                },
+                              },
+                            }))
+                          }
+                          size="sm"
+                          styles={switchControlStyles()}
+                        />
+                        <SimpleGrid cols={{ base: 1, sm: 2 }}>
+                          <TextInput
+                            label={infoLabel(
+                              __("Lambda render concurrency", TEXT_DOMAIN),
+                              "remote-render-concurrency",
+                            )}
+                            description={__(
+                              "Maximum number of page-render Lambda invocations coordinated in parallel. This replaces crawl concurrency while Lambda rendering is enabled.",
+                              TEXT_DOMAIN,
+                            )}
+                            type="number"
+                            min={1}
+                            max={100}
+                            styles={alignedTextInputStyles()}
+                            value={String(
+                              config.remoteWorkers.render.concurrency,
+                            )}
+                            onChange={(event) =>
+                              setConfig((prev) => ({
+                                ...prev,
+                                remoteWorkers: {
+                                  ...prev.remoteWorkers,
+                                  render: {
+                                    ...prev.remoteWorkers.render,
+                                    concurrency: Number(
+                                      event.currentTarget.value || 1,
+                                    ),
+                                  },
+                                },
+                              }))
+                            }
+                            disabled={!config.remoteWorkers.render.enabled}
+                          />
+                          <TextInput
+                            label={infoLabel(
+                              __("Lambda render attempts", TEXT_DOMAIN),
+                              "remote-render-max-attempts",
+                            )}
+                            description={__(
+                              "Maximum attempts per page render, including the first invocation (1-5).",
+                              TEXT_DOMAIN,
+                            )}
+                            type="number"
+                            min={1}
+                            max={5}
+                            styles={alignedTextInputStyles()}
+                            value={String(
+                              config.remoteWorkers.render.maxAttempts,
+                            )}
+                            onChange={(event) =>
+                              setConfig((prev) => ({
+                                ...prev,
+                                remoteWorkers: {
+                                  ...prev.remoteWorkers,
+                                  render: {
+                                    ...prev.remoteWorkers.render,
+                                    maxAttempts: Number(
+                                      event.currentTarget.value || 1,
+                                    ),
+                                  },
+                                },
+                              }))
+                            }
+                            disabled={!config.remoteWorkers.render.enabled}
+                          />
+                        </SimpleGrid>
+                        <Switch
+                          label={infoLabel(
+                            __("Delegate text rewrite to Lambda", TEXT_DOMAIN),
+                            "remote-rewrite-enabled",
+                          )}
+                          description={__(
+                            "Stages text files in the worker S3 workspace, rewrites bounded batches in Lambda, and restores the verified results to the export tree.",
+                            TEXT_DOMAIN,
+                          )}
+                          checked={config.remoteWorkers.rewrite.enabled}
+                          onChange={(event) =>
+                            setConfig((prev) => ({
+                              ...prev,
+                              remoteWorkers: {
+                                ...prev.remoteWorkers,
+                                rewrite: {
+                                  ...prev.remoteWorkers.rewrite,
+                                  enabled: event.currentTarget.checked,
+                                },
+                              },
+                            }))
+                          }
+                          size="sm"
+                          styles={switchControlStyles()}
+                        />
+                        <SimpleGrid cols={{ base: 1, sm: 3 }}>
+                          <TextInput
+                            label={infoLabel(
+                              __("Lambda rewrite concurrency", TEXT_DOMAIN),
+                              "remote-rewrite-concurrency",
+                            )}
+                            description={__(
+                              "Maximum concurrent rewrite Lambda invocations.",
+                              TEXT_DOMAIN,
+                            )}
+                            type="number"
+                            min={1}
+                            max={100}
+                            styles={alignedTextInputStyles()}
+                            value={String(
+                              config.remoteWorkers.rewrite.concurrency,
+                            )}
+                            onChange={(event) =>
+                              setConfig((prev) => ({
+                                ...prev,
+                                remoteWorkers: {
+                                  ...prev.remoteWorkers,
+                                  rewrite: {
+                                    ...prev.remoteWorkers.rewrite,
+                                    concurrency: Number(
+                                      event.currentTarget.value || 1,
+                                    ),
+                                  },
+                                },
+                              }))
+                            }
+                            disabled={!config.remoteWorkers.rewrite.enabled}
+                          />
+                          <TextInput
+                            label={infoLabel(
+                              __("Lambda rewrite batch size", TEXT_DOMAIN),
+                              "remote-rewrite-batch-size",
+                            )}
+                            description={__(
+                              "Text files processed by one Lambda invocation (1-500).",
+                              TEXT_DOMAIN,
+                            )}
+                            type="number"
+                            min={1}
+                            max={500}
+                            styles={alignedTextInputStyles()}
+                            value={String(
+                              config.remoteWorkers.rewrite.batchSize,
+                            )}
+                            onChange={(event) =>
+                              setConfig((prev) => ({
+                                ...prev,
+                                remoteWorkers: {
+                                  ...prev.remoteWorkers,
+                                  rewrite: {
+                                    ...prev.remoteWorkers.rewrite,
+                                    batchSize: Number(
+                                      event.currentTarget.value || 1,
+                                    ),
+                                  },
+                                },
+                              }))
+                            }
+                            disabled={!config.remoteWorkers.rewrite.enabled}
+                          />
+                          <TextInput
+                            label={infoLabel(
+                              __("Lambda rewrite attempts", TEXT_DOMAIN),
+                              "remote-rewrite-max-attempts",
+                            )}
+                            description={__(
+                              "Attempts per rewrite batch (1-5).",
+                              TEXT_DOMAIN,
+                            )}
+                            type="number"
+                            min={1}
+                            max={5}
+                            styles={alignedTextInputStyles()}
+                            value={String(
+                              config.remoteWorkers.rewrite.maxAttempts,
+                            )}
+                            onChange={(event) =>
+                              setConfig((prev) => ({
+                                ...prev,
+                                remoteWorkers: {
+                                  ...prev.remoteWorkers,
+                                  rewrite: {
+                                    ...prev.remoteWorkers.rewrite,
+                                    maxAttempts: Number(
+                                      event.currentTarget.value || 1,
+                                    ),
+                                  },
+                                },
+                              }))
+                            }
+                            disabled={!config.remoteWorkers.rewrite.enabled}
+                          />
+                        </SimpleGrid>
+                        <Switch
+                          label={infoLabel(
+                            __("Delegate S3 deployment to Lambda", TEXT_DOMAIN),
+                            "remote-deploy-enabled",
+                          )}
+                          description={__(
+                            "Stages the finalized export in S3, then uses Lambda for checked S3-to-S3 copies and manifest-backed deletions.",
+                            TEXT_DOMAIN,
+                          )}
+                          checked={config.remoteWorkers.deploy.enabled}
+                          onChange={(event) =>
+                            setConfig((prev) => ({
+                              ...prev,
+                              remoteWorkers: {
+                                ...prev.remoteWorkers,
+                                deploy: {
+                                  ...prev.remoteWorkers.deploy,
+                                  enabled: event.currentTarget.checked,
+                                },
+                              },
+                            }))
+                          }
+                          size="sm"
+                          styles={switchControlStyles()}
+                        />
+                        <SimpleGrid cols={{ base: 1, sm: 3 }}>
+                          <TextInput
+                            label={infoLabel(
+                              __("Lambda deploy concurrency", TEXT_DOMAIN),
+                              "remote-deploy-concurrency",
+                            )}
+                            description={__(
+                              "Maximum concurrent deploy Lambda invocations.",
+                              TEXT_DOMAIN,
+                            )}
+                            type="number"
+                            min={1}
+                            max={100}
+                            styles={alignedTextInputStyles()}
+                            value={String(
+                              config.remoteWorkers.deploy.concurrency,
+                            )}
+                            onChange={(event) =>
+                              setConfig((prev) => ({
+                                ...prev,
+                                remoteWorkers: {
+                                  ...prev.remoteWorkers,
+                                  deploy: {
+                                    ...prev.remoteWorkers.deploy,
+                                    concurrency: Number(
+                                      event.currentTarget.value || 1,
+                                    ),
+                                  },
+                                },
+                              }))
+                            }
+                            disabled={!config.remoteWorkers.deploy.enabled}
+                          />
+                          <TextInput
+                            label={infoLabel(
+                              __("Lambda deploy batch size", TEXT_DOMAIN),
+                              "remote-deploy-batch-size",
+                            )}
+                            description={__(
+                              "Objects checked or copied per invocation (1-500).",
+                              TEXT_DOMAIN,
+                            )}
+                            type="number"
+                            min={1}
+                            max={500}
+                            styles={alignedTextInputStyles()}
+                            value={String(
+                              config.remoteWorkers.deploy.batchSize,
+                            )}
+                            onChange={(event) =>
+                              setConfig((prev) => ({
+                                ...prev,
+                                remoteWorkers: {
+                                  ...prev.remoteWorkers,
+                                  deploy: {
+                                    ...prev.remoteWorkers.deploy,
+                                    batchSize: Number(
+                                      event.currentTarget.value || 1,
+                                    ),
+                                  },
+                                },
+                              }))
+                            }
+                            disabled={!config.remoteWorkers.deploy.enabled}
+                          />
+                          <TextInput
+                            label={infoLabel(
+                              __("Lambda deploy attempts", TEXT_DOMAIN),
+                              "remote-deploy-max-attempts",
+                            )}
+                            description={__(
+                              "Attempts per deploy batch (1-5).",
+                              TEXT_DOMAIN,
+                            )}
+                            type="number"
+                            min={1}
+                            max={5}
+                            styles={alignedTextInputStyles()}
+                            value={String(
+                              config.remoteWorkers.deploy.maxAttempts,
+                            )}
+                            onChange={(event) =>
+                              setConfig((prev) => ({
+                                ...prev,
+                                remoteWorkers: {
+                                  ...prev.remoteWorkers,
+                                  deploy: {
+                                    ...prev.remoteWorkers.deploy,
+                                    maxAttempts: Number(
+                                      event.currentTarget.value || 1,
+                                    ),
+                                  },
+                                },
+                              }))
+                            }
+                            disabled={!config.remoteWorkers.deploy.enabled}
                           />
                         </SimpleGrid>
                         <SimpleGrid cols={{ base: 1, sm: 2 }}>
@@ -4534,14 +5013,14 @@ export default function Main({ store }: MainProps) {
                                       TEXT_DOMAIN,
                                     )
                                   : hasIncrementalAccess
-                                  ? __(
-                                      "Incremental skips unchanged pages when possible.",
-                                      TEXT_DOMAIN,
-                                    )
-                                  : __(
-                                      "Incremental requests stay selectable, but without an active WPSuite subscription the exporter will fall back to a full crawl.",
-                                      TEXT_DOMAIN,
-                                    )
+                                    ? __(
+                                        "Incremental skips unchanged pages when possible.",
+                                        TEXT_DOMAIN,
+                                      )
+                                    : __(
+                                        "Incremental requests stay selectable, but without an active WPSuite subscription the exporter will fall back to a full crawl.",
+                                        TEXT_DOMAIN,
+                                      )
                               }
                               onChange={(value) =>
                                 setCrawlMode(
@@ -4579,14 +5058,14 @@ export default function Main({ store }: MainProps) {
                                       TEXT_DOMAIN,
                                     )
                                   : deploymentProfileNames.length === 0
-                                  ? __(
-                                      "Base target will be used. Add extra targets under PRO Features > Extra Deployment Targets if needed.",
-                                      TEXT_DOMAIN,
-                                    )
-                                  : __(
-                                      "Optional. Leave empty to use the base target.",
-                                      TEXT_DOMAIN,
-                                    )
+                                    ? __(
+                                        "Base target will be used. Add extra targets under PRO Features > Extra Deployment Targets if needed.",
+                                        TEXT_DOMAIN,
+                                      )
+                                    : __(
+                                        "Optional. Leave empty to use the base target.",
+                                        TEXT_DOMAIN,
+                                      )
                               }
                               onChange={(value) =>
                                 setDeploymentProfile(
@@ -4976,7 +5455,6 @@ export default function Main({ store }: MainProps) {
                                       color="red"
                                       size="xs"
                                       leftSection={<IconTrash size={14} />}
-                                      disabled={state.lockActive}
                                       onClick={() =>
                                         setPendingDeleteJobId(item.id)
                                       }
@@ -5406,8 +5884,8 @@ export default function Main({ store }: MainProps) {
                                 queueRunnerStatus === "error"
                                   ? "red"
                                   : queueRunnerStatus
-                                  ? "blue"
-                                  : "gray"
+                                    ? "blue"
+                                    : "gray"
                               }
                               variant="light"
                             >
@@ -6157,16 +6635,17 @@ export default function Main({ store }: MainProps) {
                                         entry.status === "failed"
                                           ? "red"
                                           : entry.status === "success"
-                                          ? "green"
-                                          : entry.status === "stopped"
-                                          ? "yellow"
-                                          : entry.status === "running"
-                                          ? "blue"
-                                          : entry.status === "queued"
-                                          ? "gray"
-                                          : entry.status === "retry-wait"
-                                          ? "orange"
-                                          : "dark"
+                                            ? "green"
+                                            : entry.status === "stopped"
+                                              ? "yellow"
+                                              : entry.status === "running"
+                                                ? "blue"
+                                                : entry.status === "queued"
+                                                  ? "gray"
+                                                  : entry.status ===
+                                                      "retry-wait"
+                                                    ? "orange"
+                                                    : "dark"
                                       }
                                       variant="light"
                                     >
@@ -6464,8 +6943,8 @@ export default function Main({ store }: MainProps) {
                   !contentSyncMultisite
                     ? "This WordPress installation is not currently a multisite network."
                     : !contentSyncNetworkActive
-                    ? "Network-activate SmartCloud Static Publisher before enabling full-network tracking."
-                    : "Track matching post types across the full WordPress network. Changing this scope requires a new successful normal publish baseline.",
+                      ? "Network-activate SmartCloud Static Publisher before enabling full-network tracking."
+                      : "Track matching post types across the full WordPress network. Changing this scope requires a new successful normal publish baseline.",
                   TEXT_DOMAIN,
                 )}
                 checked={schedulerRuleDraft.includeSubsites === true}
