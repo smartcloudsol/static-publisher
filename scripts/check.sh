@@ -54,11 +54,14 @@ php -l "$PROJECT_ROOT/smartcloud-static-publisher.php" >/dev/null
 php -l "$PROJECT_ROOT/hub-loader.php" >/dev/null
 php -l "$PROJECT_ROOT/admin/php/admin.php" >/dev/null
 php -l "$PROJECT_ROOT/includes/class-content-change-journal.php" >/dev/null
+php -l "$PROJECT_ROOT/includes/class-job-abilities.php" >/dev/null
 php -l "$PROJECT_ROOT/uninstall.php" >/dev/null
 php "$PROJECT_ROOT/tests/hub-runtime-contract.test.php"
 php "$PROJECT_ROOT/tests/content-sync-contract.test.php"
 php "$PROJECT_ROOT/tests/content-sync-post-types.test.php"
 php "$PROJECT_ROOT/tests/content-sync-archive-families.test.php"
+php "$PROJECT_ROOT/tests/job-abilities-contract.test.php"
+php "$PROJECT_ROOT/tests/job-status.test.php"
 php "$PROJECT_ROOT/tests/release-gate-provider.test.php"
 php "$PROJECT_ROOT/tests/remote-workers-config.test.php"
 

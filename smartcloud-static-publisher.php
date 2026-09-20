@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.0.21
+ * Version:           1.0.22
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.0.21';
+const VERSION = '1.0.22';
 
 final class Plugin
 {
@@ -41,6 +41,7 @@ final class Plugin
     private const OPTION_KEY = 'smartcloud_static_publisher_config';
     private const OPTION_AUDIT_LOG_KEY = 'smartcloud_static_publisher_audit_log';
     private const OPTION_AUDIT_CURSOR_KEY = 'smartcloud_static_publisher_audit_cursor';
+    private const OPTION_AUDIT_MUTATION_LOCK_KEY = 'smartcloud_static_publisher_audit_mutation_lock';
     private const OPTION_RUNTIME_NONCE_KEY = 'smartcloud_static_publisher_runtime_nonce';
     private const OPTION_QUEUE_MUTATION_LOCK_KEY = 'smartcloud_static_publisher_queue_mutation_lock';
     private const REST_NAMESPACE = 'smartcloud-static-publisher/v1';
@@ -49,6 +50,7 @@ final class Plugin
     private static ?Plugin $instance = null;
     private ?Admin $admin = null;
     private ?ContentChangeJournal $contentChangeJournal = null;
+    private ?JobAbilities $jobAbilities = null;
 
     public static function instance(): Plugin
     {
@@ -67,6 +69,9 @@ final class Plugin
         if ($this->contentChangeJournal instanceof ContentChangeJournal) {
             $this->contentChangeJournal->registerHooks();
             add_action('init', array($this->contentChangeJournal, 'maybeInstallSchema'), 5);
+        }
+        if ($this->jobAbilities instanceof JobAbilities) {
+            $this->jobAbilities->registerHooks();
         }
 
         add_action('rest_api_init', array($this, 'registerRestRoutes'));
@@ -118,11 +123,18 @@ final class Plugin
             require_once SMARTCLOUD_STATIC_PUBLISHER_PATH . 'includes/class-content-change-journal.php';
         }
 
+        if (file_exists(SMARTCLOUD_STATIC_PUBLISHER_PATH . 'includes/class-job-abilities.php')) {
+            require_once SMARTCLOUD_STATIC_PUBLISHER_PATH . 'includes/class-job-abilities.php';
+        }
+
         if (class_exists('\SmartCloud\WPSuite\StaticPublisher\Admin\Admin')) {
             $this->admin = new Admin($this);
         }
         if (class_exists('\SmartCloud\WPSuite\StaticPublisher\ContentChangeJournal')) {
             $this->contentChangeJournal = new ContentChangeJournal($this);
+        }
+        if (class_exists('\SmartCloud\WPSuite\StaticPublisher\JobAbilities')) {
+            $this->jobAbilities = new JobAbilities($this);
         }
     }
 
@@ -410,6 +422,595 @@ final class Plugin
         );
     }
 
+    /**
+     * Queue one standard publisher job from wp-admin or a WordPress Ability.
+     *
+     * @return array<string, mixed>|\WP_Error
+     */
+    public function enqueueStandardJob(array $data, string $actorSource = 'wp-admin', ?int $actorUserId = null): array|\WP_Error
+    {
+        $command = isset($data['command']) ? sanitize_text_field((string) $data['command']) : '';
+        $allowedCommands = array('publish', 'crawl', 'deploy', 'invalidate', 'retry-timeouts', 'url', 'content-sync');
+        if (!in_array($command, $allowedCommands, true)) {
+            return new \WP_Error(
+                'invalid_publisher_command',
+                __('Invalid command.', 'smartcloud-static-publisher'),
+                array('status' => 400)
+            );
+        }
+
+        $crawlMode = isset($data['crawlMode']) ? sanitize_text_field((string) $data['crawlMode']) : 'full';
+        if (!in_array($crawlMode, array('full', 'incremental'), true)) {
+            $crawlMode = 'full';
+        }
+        if (!in_array($command, array('publish', 'crawl'), true)) {
+            $crawlMode = 'full';
+        }
+
+        $url = '';
+        if ($command === 'url') {
+            $url = isset($data['url']) ? sanitize_text_field((string) $data['url']) : '';
+            if ($url === '') {
+                return new \WP_Error(
+                    'publisher_url_required',
+                    __('URL path is required for the url command.', 'smartcloud-static-publisher'),
+                    array('status' => 400)
+                );
+            }
+        }
+
+        $deploymentProfile = isset($data['deploymentProfile'])
+            ? $this->sanitizeDeploymentProfileName($data['deploymentProfile'])
+            : '';
+        if (!in_array($command, array('publish', 'deploy', 'invalidate', 'content-sync'), true)) {
+            $deploymentProfile = '';
+        }
+
+        $awsTempCreds = null;
+        $awsCredCommands = array('publish', 'deploy', 'invalidate', 'content-sync');
+        if (in_array($command, $awsCredCommands, true) && isset($data['awsTempCreds']) && is_array($data['awsTempCreds'])) {
+            $sanitizedCreds = $this->sanitizeAwsTempCreds($data['awsTempCreds']);
+            $hasAnyCred = !empty($sanitizedCreds['accessKeyId']) || !empty($sanitizedCreds['secretAccessKey']) || !empty($sanitizedCreds['sessionToken']);
+            if ($hasAnyCred && (empty($sanitizedCreds['accessKeyId']) || empty($sanitizedCreds['secretAccessKey']))) {
+                return new \WP_Error(
+                    'publisher_aws_credentials_incomplete',
+                    __('Temp AWS creds require both access key ID and secret access key.', 'smartcloud-static-publisher'),
+                    array('status' => 400)
+                );
+            }
+            if ($hasAnyCred) {
+                $awsTempCreds = $sanitizedCreds;
+            }
+        }
+
+        $paths = $this->getRuntimePaths();
+        wp_mkdir_p($paths['runtime']);
+        $this->writeJsonFile($paths['config'], $this->buildRuntimeConfig($this->getConfig()));
+
+        $contentSyncContext = null;
+        if ($command === 'content-sync') {
+            $contentSyncRuleId = isset($data['contentSyncRuleId'])
+                ? sanitize_text_field((string) $data['contentSyncRuleId'])
+                : '';
+            if ($contentSyncRuleId === '') {
+                return new \WP_Error(
+                    'content_sync_rule_required',
+                    __('contentSyncRuleId is required for content-sync. Use the list-content-sync-rules Ability to discover valid rule IDs.', 'smartcloud-static-publisher'),
+                    array('status' => 400)
+                );
+            }
+            $contentSyncContext = $this->resolveManualContentSyncContext($deploymentProfile, $contentSyncRuleId, $paths);
+            if (is_wp_error($contentSyncContext)) {
+                return $contentSyncContext;
+            }
+        }
+
+        $userId = $actorUserId ?? get_current_user_id();
+        $job = array(
+            'id' => wp_generate_uuid4(),
+            'command' => $command,
+            'enqueueSource' => 'manual',
+            'url' => $url,
+            'wpsuite' => $this->getWpSuiteRuntimeConfig(),
+            'status' => 'queued',
+            'createdAt' => gmdate('c'),
+            'createdBy' => max(0, $userId),
+        );
+        if (in_array($command, array('publish', 'crawl'), true)) {
+            $job['crawlMode'] = $crawlMode;
+        }
+        if ($deploymentProfile !== '') {
+            $job['deploymentProfile'] = $deploymentProfile;
+        }
+        if (is_array($contentSyncContext)) {
+            $job['ruleId'] = $contentSyncContext['ruleId'];
+            $job['coalesceKey'] = $contentSyncContext['coalesceKey'];
+            $job['attempt'] = 0;
+        }
+        if (is_array($awsTempCreds)) {
+            $job['awsTempCreds'] = $awsTempCreds;
+        }
+
+        $coalesced = false;
+        try {
+            $queueResult = $this->withQueueMutationLock(function () use ($paths, $job, &$coalesced) {
+                $queue = $this->readQueue();
+                if (($job['command'] ?? '') === 'content-sync') {
+                    $currentRun = $this->readJsonFile($paths['currentRun']);
+                    $candidates = array_merge($queue, is_array($currentRun) ? array($currentRun) : array());
+                    foreach ($candidates as $candidate) {
+                        if (
+                            is_array($candidate)
+                            && ($candidate['command'] ?? '') === 'content-sync'
+                            && ($candidate['coalesceKey'] ?? '') === ($job['coalesceKey'] ?? '')
+                            && in_array(($candidate['status'] ?? 'queued'), array('queued', 'retry-wait', 'running'), true)
+                        ) {
+                            $coalesced = true;
+                            return array('queueLength' => count($queue), 'job' => $candidate);
+                        }
+                    }
+                }
+                $queue[] = $job;
+                $this->writeJsonFile($paths['queue'], array_values($queue));
+                return array('queueLength' => count($queue), 'job' => $job);
+            });
+        } catch (\RuntimeException $error) {
+            return new \WP_Error(
+                'publisher_queue_busy',
+                __('Queue is busy. Please try again in a moment.', 'smartcloud-static-publisher'),
+                array('status' => 409)
+            );
+        }
+
+        $queuedJob = is_array($queueResult['job'] ?? null) ? $queueResult['job'] : $job;
+        $queueLength = max(0, (int) ($queueResult['queueLength'] ?? 0));
+        $this->appendAuditLogEntry(array(
+            'eventType' => $coalesced ? 'content-sync-coalesced' : 'job-created',
+            'status' => 'success',
+            'actorSource' => sanitize_key($actorSource),
+            'actorUserId' => max(0, $userId),
+            'jobId' => (string) ($queuedJob['id'] ?? ''),
+            'command' => (string) ($queuedJob['command'] ?? $command),
+            'message' => $coalesced
+                ? __('Manual content-sync demand matched an existing queued or running job.', 'smartcloud-static-publisher')
+                : __('Job queued from WordPress.', 'smartcloud-static-publisher'),
+            'details' => array(
+                'queueLength' => $queueLength,
+                'usesTempAwsCreds' => is_array($awsTempCreds),
+                'crawlMode' => $crawlMode,
+                'deploymentProfile' => $deploymentProfile,
+                'url' => $url,
+                'ruleId' => (string) ($queuedJob['ruleId'] ?? ''),
+                'coalesced' => $coalesced,
+            ),
+        ));
+
+        return array(
+            'success' => true,
+            'job' => $this->sanitizeJobForState($queuedJob),
+            'job_id' => sanitize_text_field((string) ($queuedJob['id'] ?? '')),
+            'status' => sanitize_text_field((string) ($queuedJob['status'] ?? 'queued')) ?: 'queued',
+            'status_tool' => 'smartcloud-static-publisher/get-job-status',
+            'queueLength' => $queueLength,
+            'coalesced' => $coalesced,
+            'message' => $coalesced
+                ? __('An equivalent content-sync job is already queued or running. Use get-job-status with job_id to check it later.', 'smartcloud-static-publisher')
+                : __('Job queued. Use get-job-status with job_id to check its progress and outcome later.', 'smartcloud-static-publisher'),
+        );
+    }
+
+    /**
+     * Resolve the current or retained outcome of one queue job without exposing
+     * credentials, runtime identities, or filesystem paths.
+     *
+     * @return array<string, mixed>
+     */
+    public function getJobStatus(string $jobId): array
+    {
+        $jobId = sanitize_text_field($jobId);
+        $empty = array(
+            'success' => true,
+            'found' => false,
+            'job_id' => $jobId,
+            'job' => '',
+            'status' => 'not-found',
+            'terminal' => false,
+            'jobs_ahead' => 0,
+            'queue_position' => 0,
+            'created_at' => '',
+            'started_at' => '',
+            'ended_at' => '',
+            'next_attempt_at' => '',
+            'error' => '',
+            'message' => __('No active or retained job record was found for this job_id. Older outcomes may have expired from the bounded audit history.', 'smartcloud-static-publisher'),
+        );
+        if ($jobId === '') {
+            return $empty;
+        }
+
+        $this->ingestRuntimeAuditEvents();
+        $paths = $this->getRuntimePaths();
+        $currentBeforeQueue = $this->readJsonFile((string) ($paths['currentRun'] ?? ''));
+        $queue = $this->readQueue();
+        $currentAfterQueue = $this->readJsonFile((string) ($paths['currentRun'] ?? ''));
+        $current = is_array($currentAfterQueue) ? $currentAfterQueue : null;
+        $currentId = is_array($current) ? sanitize_text_field((string) ($current['id'] ?? '')) : '';
+        $currentActive = $currentId !== '' && in_array((string) ($current['status'] ?? ''), array('queued', 'running'), true);
+        $transitionJob = is_array($currentBeforeQueue)
+            && sanitize_text_field((string) ($currentBeforeQueue['id'] ?? '')) === $jobId
+            && !($currentId === $jobId && $currentActive)
+                ? $currentBeforeQueue
+                : null;
+
+        if ($currentId === $jobId && $currentActive && is_array($current)) {
+            return $this->formatKnownJobStatus($current, 'running', false, __('Job is currently running.', 'smartcloud-static-publisher'));
+        }
+
+        $queueMatches = array_values(array_filter($queue, static function (mixed $queued) use ($jobId): bool {
+            return is_array($queued) && sanitize_text_field((string) ($queued['id'] ?? '')) === $jobId;
+        }));
+        if (count($queueMatches) > 1) {
+            return array_merge($empty, array(
+                'found' => true,
+                'status' => 'unknown',
+                'message' => __('The queue contains conflicting records for this job_id. An operator must resolve the duplicate before its status can be reported safely.', 'smartcloud-static-publisher'),
+            ));
+        }
+
+        foreach ($queue as $index => $queued) {
+            if (!is_array($queued) || sanitize_text_field((string) ($queued['id'] ?? '')) !== $jobId) {
+                continue;
+            }
+            $status = (string) ($queued['status'] ?? 'queued');
+            $status = $status === 'retry-wait' ? 'retry-wait' : 'queued';
+            $jobsAhead = max(0, (int) $index + ($currentActive ? 1 : 0));
+            $nextAttemptAt = sanitize_text_field((string) ($queued['nextAttemptAt'] ?? ''));
+            return array(
+                'success' => true,
+                'found' => true,
+                'job_id' => $jobId,
+                'job' => sanitize_text_field((string) ($queued['command'] ?? '')),
+                'status' => $status,
+                'terminal' => false,
+                'jobs_ahead' => $jobsAhead,
+                'queue_position' => $jobsAhead + 1,
+                'created_at' => sanitize_text_field((string) ($queued['createdAt'] ?? '')),
+                'started_at' => '',
+                'ended_at' => '',
+                'next_attempt_at' => $nextAttemptAt,
+                'error' => $this->sanitizeJobStatusReason((string) ($queued['error'] ?? '')),
+                'message' => $status === 'retry-wait'
+                    ? sprintf(__('Job is waiting for retry; %d job(s) are ahead of it.', 'smartcloud-static-publisher'), $jobsAhead)
+                    : sprintf(__('Job is queued; %d job(s) are ahead of it.', 'smartcloud-static-publisher'), $jobsAhead),
+            );
+        }
+
+        $lastRun = $this->readJsonFile((string) ($paths['lastRun'] ?? ''));
+        if (is_array($lastRun) && sanitize_text_field((string) ($lastRun['id'] ?? '')) === $jobId) {
+            $status = $this->normalizeReportedJobStatus((string) ($lastRun['status'] ?? 'unknown'));
+            if ($status !== 'retry-wait') {
+                return $this->formatKnownJobStatus($lastRun, $status, $this->isTerminalJobStatus($status), $this->jobStatusMessage($lastRun, $status));
+            }
+        }
+
+        $events = array_values(array_filter($this->getAuditLogEntries(), static function (mixed $entry) use ($jobId): bool {
+            return is_array($entry) && sanitize_text_field((string) ($entry['jobId'] ?? '')) === $jobId;
+        }));
+        if (empty($events)) {
+            if (is_array($transitionJob)) {
+                return $this->formatKnownJobStatus(
+                    $transitionJob,
+                    'unknown',
+                    false,
+                    __('The job changed state while its status was being read. Check again shortly for its current or terminal outcome.', 'smartcloud-static-publisher')
+                );
+            }
+            return $empty;
+        }
+
+        $command = '';
+        $createdAt = '';
+        $startedAt = '';
+        $outcome = null;
+        foreach ($events as $event) {
+            $eventType = sanitize_text_field((string) ($event['eventType'] ?? ''));
+            $details = is_array($event['details'] ?? null) ? $event['details'] : array();
+            if ($command === '') {
+                $command = sanitize_text_field((string) ($event['command'] ?? ''));
+            }
+            if ($createdAt === '' && $eventType === 'job-created') {
+                $createdAt = sanitize_text_field((string) ($event['occurredAt'] ?? ''));
+            }
+            if ($startedAt === '' && $eventType === 'job-run-started') {
+                $startedAt = $this->auditDetailText($details, 'startedAt');
+                if ($startedAt === '') {
+                    $startedAt = sanitize_text_field((string) ($event['occurredAt'] ?? ''));
+                }
+            }
+            if ($outcome === null && in_array($eventType, array('job-run-finished', 'job-run-stopped', 'job-deleted', 'content-sync-baseline-required', 'content-sync-retry-scheduled'), true)) {
+                $outcome = $event;
+            }
+        }
+
+        if (is_array($outcome)) {
+            $eventType = sanitize_text_field((string) ($outcome['eventType'] ?? ''));
+            $details = is_array($outcome['details'] ?? null) ? $outcome['details'] : array();
+            $status = match ($eventType) {
+                'job-deleted' => 'cancelled',
+                'job-run-stopped' => 'stopped',
+                'content-sync-retry-scheduled' => 'retry-wait',
+                'content-sync-baseline-required' => 'failed',
+                default => $this->normalizeReportedJobStatus((string) ($outcome['status'] ?? 'unknown')),
+            };
+            $error = $this->sanitizeJobStatusReason($this->auditDetailText($details, 'error'));
+            if ($error === '' && in_array($status, array('failed', 'stopped', 'cancelled'), true)) {
+                $error = $this->sanitizeJobStatusReason((string) ($outcome['message'] ?? ''));
+            }
+            $endedAt = $this->auditDetailText($details, 'endedAt');
+            if ($endedAt === '' && $status !== 'retry-wait') {
+                $endedAt = sanitize_text_field((string) ($outcome['occurredAt'] ?? ''));
+            }
+            if ($status === 'retry-wait') {
+                $status = 'unknown';
+                $error = '';
+            }
+            return array(
+                'success' => true,
+                'found' => true,
+                'job_id' => $jobId,
+                'job' => $command,
+                'status' => $status,
+                'terminal' => $this->isTerminalJobStatus($status),
+                'jobs_ahead' => 0,
+                'queue_position' => 0,
+                'created_at' => $createdAt,
+                'started_at' => $startedAt,
+                'ended_at' => $endedAt,
+                'next_attempt_at' => $this->auditDetailText($details, 'nextAttemptAt'),
+                'error' => $error,
+                'message' => $status === 'unknown'
+                    ? __('A retry was recorded, but this job_id is no longer present in the live queue. Check again shortly or ask an operator to inspect the queue runner.', 'smartcloud-static-publisher')
+                    : $this->auditStatusMessage($status, $endedAt, $error),
+            );
+        }
+
+        $latest = $events[0];
+        return array(
+            'success' => true,
+            'found' => true,
+            'job_id' => $jobId,
+            'job' => $command,
+            'status' => 'unknown',
+            'terminal' => false,
+            'jobs_ahead' => 0,
+            'queue_position' => 0,
+            'created_at' => $createdAt,
+            'started_at' => $startedAt,
+            'ended_at' => '',
+            'next_attempt_at' => '',
+            'error' => '',
+            'message' => sprintf(
+                __('The job is no longer active and no retained terminal outcome was found. Its latest audit event was recorded at %s.', 'smartcloud-static-publisher'),
+                sanitize_text_field((string) ($latest['occurredAt'] ?? ''))
+            ),
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private function formatKnownJobStatus(array $job, string $status, bool $terminal, string $message): array
+    {
+        return array(
+            'success' => true,
+            'found' => true,
+            'job_id' => sanitize_text_field((string) ($job['id'] ?? '')),
+            'job' => sanitize_text_field((string) ($job['command'] ?? '')),
+            'status' => $status,
+            'terminal' => $terminal,
+            'jobs_ahead' => 0,
+            'queue_position' => 0,
+            'created_at' => sanitize_text_field((string) ($job['createdAt'] ?? '')),
+            'started_at' => sanitize_text_field((string) ($job['startedAt'] ?? '')),
+            'ended_at' => sanitize_text_field((string) ($job['endedAt'] ?? '')),
+            'next_attempt_at' => sanitize_text_field((string) ($job['nextAttemptAt'] ?? '')),
+            'error' => $this->sanitizeJobStatusReason((string) ($job['error'] ?? '')),
+            'message' => $message,
+        );
+    }
+
+    private function normalizeReportedJobStatus(string $status): string
+    {
+        $status = strtolower(sanitize_text_field($status));
+        return in_array($status, array('queued', 'retry-wait', 'running', 'success', 'failed', 'stopped', 'cancelled'), true)
+            ? $status
+            : 'unknown';
+    }
+
+    private function isTerminalJobStatus(string $status): bool
+    {
+        return in_array($status, array('success', 'failed', 'stopped', 'cancelled'), true);
+    }
+
+    private function jobStatusMessage(array $job, string $status): string
+    {
+        $endedAt = sanitize_text_field((string) ($job['endedAt'] ?? ''));
+        $error = $this->sanitizeJobStatusReason((string) ($job['error'] ?? ''));
+        return $this->auditStatusMessage($status, $endedAt, $error);
+    }
+
+    private function auditStatusMessage(string $status, string $endedAt, string $error): string
+    {
+        return match ($status) {
+            'success' => $endedAt !== ''
+                ? sprintf(__('Job completed successfully at %s.', 'smartcloud-static-publisher'), $endedAt)
+                : __('Job completed successfully.', 'smartcloud-static-publisher'),
+            'failed' => $endedAt !== '' && $error !== ''
+                ? sprintf(__('Job failed at %1$s: %2$s', 'smartcloud-static-publisher'), $endedAt, $error)
+                : ($error !== ''
+                    ? sprintf(__('Job failed: %s', 'smartcloud-static-publisher'), $error)
+                    : ($endedAt !== ''
+                        ? sprintf(__('Job failed at %s without a retained error message.', 'smartcloud-static-publisher'), $endedAt)
+                        : __('Job failed without a retained error message.', 'smartcloud-static-publisher'))),
+            'stopped' => $endedAt !== '' && $error !== ''
+                ? sprintf(__('Job was stopped at %1$s: %2$s', 'smartcloud-static-publisher'), $endedAt, $error)
+                : ($error !== ''
+                    ? sprintf(__('Job was stopped: %s', 'smartcloud-static-publisher'), $error)
+                    : ($endedAt !== ''
+                        ? sprintf(__('Job was stopped at %s.', 'smartcloud-static-publisher'), $endedAt)
+                        : __('Job was stopped before completion.', 'smartcloud-static-publisher'))),
+            'cancelled' => $endedAt !== ''
+                ? sprintf(__('Job was removed from the queue at %s before execution.', 'smartcloud-static-publisher'), $endedAt)
+                : __('Job was removed from the queue before execution.', 'smartcloud-static-publisher'),
+            'retry-wait' => __('Job failed temporarily and is waiting for its scheduled retry.', 'smartcloud-static-publisher'),
+            'running' => __('Job is currently running.', 'smartcloud-static-publisher'),
+            default => __('The retained job state is incomplete.', 'smartcloud-static-publisher'),
+        };
+    }
+
+    private function auditDetailText(array $details, string $key): string
+    {
+        $value = $details[$key] ?? $details[strtolower($key)] ?? '';
+        return sanitize_text_field((string) $value);
+    }
+
+    private function sanitizeJobStatusReason(string $reason): string
+    {
+        $reason = sanitize_text_field($reason);
+        if ($reason === '') {
+            return '';
+        }
+
+        $patterns = array(
+            '/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/',
+            '/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/i',
+            '/\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/',
+            '/\b(AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)|x-api-key|api[_-]?key|password|passwd|secret|token|authorization)\b\s*[:=]\s*[^\s,;]+/i',
+            '#\b([a-z][a-z0-9+.-]*://)[^\s/@:]+:[^\s/@]+@#i',
+            '#(?<![A-Za-z0-9])/(?:home|var|etc|opt|srv|tmp|usr|root|mnt|app|workspace|data|run|private|Users)(?:/[^\s,:;]+)+#i',
+            '#\b[A-Za-z]:\\\\(?:[^\s,:;]+\\\\)*[^\s,:;]+#',
+            '#\\\\\\\\[^\s\\]+\\\\[^\s,:;]+(?:\\\\[^\s,:;]+)*#',
+            '/-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----/i',
+        );
+        $replacements = array(
+            '[redacted]',
+            'Bearer [redacted]',
+            '[redacted]',
+            '$1=[redacted]',
+            '$1[redacted]@',
+            '[path]',
+            '[path]',
+            '[path]',
+            '[redacted private key]',
+        );
+        $redacted = preg_replace($patterns, $replacements, $reason);
+        $redacted = is_string($redacted) ? preg_replace('/\s+/', ' ', trim($redacted)) : '';
+        if (!is_string($redacted)) {
+            return '';
+        }
+        return function_exists('mb_substr') ? mb_substr($redacted, 0, 500) : substr($redacted, 0, 500);
+    }
+
+    /**
+     * Resolve the canonical rule identity written by the queue runner.
+     *
+     * @return array{ruleId:string,coalesceKey:string}|\WP_Error
+     */
+    private function resolveManualContentSyncContext(string $deploymentProfile, string $requestedRuleId, array $paths): array|\WP_Error
+    {
+        $active = $this->readJsonFile((string) ($paths['contentSyncActiveRules'] ?? ''));
+        $baselines = $this->readJsonFile((string) ($paths['contentSyncBaseline'] ?? ''));
+        $state = $this->readJsonFile((string) ($paths['contentSyncState'] ?? ''));
+        $activeEntries = is_array($active) && (int) ($active['contractVersion'] ?? 0) === 1 && is_array($active['entries'] ?? null)
+            ? $active['entries']
+            : array();
+        $baselineEntries = is_array($baselines) && is_array($baselines['entries'] ?? null)
+            ? $baselines['entries']
+            : array();
+        $stateEntries = is_array($state) && is_array($state['rules'] ?? null)
+            ? $state['rules']
+            : array();
+        $ruleEntries = is_array($active) && is_array($active['rules'] ?? null)
+            ? $active['rules']
+            : array();
+        $rulesByCoalesceKey = array();
+        foreach ($ruleEntries as $ruleEntry) {
+            if (!is_array($ruleEntry)) {
+                continue;
+            }
+            $key = sanitize_text_field((string) ($ruleEntry['coalesceKey'] ?? ''));
+            if ($key !== '') {
+                $rulesByCoalesceKey[$key] = $ruleEntry;
+            }
+        }
+        $requestedTarget = $deploymentProfile === '' ? 'default' : $deploymentProfile;
+        $requestedIdentityCount = 0;
+        foreach ($ruleEntries as $ruleEntry) {
+            if (!is_array($ruleEntry)) {
+                continue;
+            }
+            if (hash_equals($requestedRuleId, sanitize_text_field((string) ($ruleEntry['ruleId'] ?? '')))) {
+                $requestedIdentityCount++;
+            }
+        }
+        if ($requestedIdentityCount > 1) {
+            return new \WP_Error(
+                'content_sync_rule_ambiguous',
+                __('More than one configured content-sync rule uses this ID. Give every content-sync rule a globally unique ID, then refresh the queue-runner snapshot.', 'smartcloud-static-publisher'),
+                array('status' => 409)
+            );
+        }
+        $matches = array();
+
+        foreach ($activeEntries as $activeEntry) {
+            if (!is_array($activeEntry)) {
+                continue;
+            }
+            $ruleId = sanitize_text_field((string) ($activeEntry['ruleId'] ?? ''));
+            $coalesceKey = sanitize_text_field((string) ($activeEntry['coalesceKey'] ?? ''));
+            $consumerId = sanitize_text_field((string) ($activeEntry['consumerId'] ?? ''));
+            $baseline = is_array($baselineEntries[$coalesceKey] ?? null) ? $baselineEntries[$coalesceKey] : array();
+            $ruleState = is_array($stateEntries[$coalesceKey] ?? null) ? $stateEntries[$coalesceKey] : array();
+            $ruleEntry = is_array($rulesByCoalesceKey[$coalesceKey] ?? null) ? $rulesByCoalesceKey[$coalesceKey] : array();
+            $snapshotTarget = sanitize_text_field((string) ($ruleEntry['target'] ?? ''));
+            $targetMatches = $snapshotTarget !== ''
+                ? hash_equals($requestedTarget, $snapshotTarget)
+                : sanitize_text_field((string) ($baseline['deploymentProfile'] ?? '')) === $deploymentProfile;
+            if (
+                $ruleId === ''
+                || !hash_equals($requestedRuleId, $ruleId)
+                || $coalesceKey === ''
+                || $consumerId === ''
+                || ($baseline['ruleId'] ?? '') !== $ruleId
+                || ($baseline['coalesceKey'] ?? '') !== $coalesceKey
+                || ($baseline['consumerId'] ?? '') !== $consumerId
+                || !$targetMatches
+                || ($ruleState['ruleId'] ?? '') !== $ruleId
+                || ($ruleState['coalesceKey'] ?? '') !== $coalesceKey
+                || ($ruleState['consumerId'] ?? '') !== $consumerId
+                || ($ruleState['baselineStatus'] ?? '') !== 'ready'
+            ) {
+                continue;
+            }
+            $matches[$coalesceKey] = array('ruleId' => $ruleId, 'coalesceKey' => $coalesceKey);
+        }
+
+        $matches = array_values($matches);
+        if (count($matches) === 1) {
+            return $matches[0];
+        }
+        if (count($matches) > 1) {
+            return new \WP_Error(
+                'content_sync_rule_ambiguous',
+                __('More than one active content-sync context uses this rule ID. Give every content-sync rule a globally unique ID, then refresh the queue-runner snapshot.', 'smartcloud-static-publisher'),
+                array('status' => 409)
+            );
+        }
+        return new \WP_Error(
+            'content_sync_rule_unavailable',
+            __('The requested content-sync rule is not active and baseline-ready for this target. Use the list-content-sync-rules Ability to retrieve the current choices.', 'smartcloud-static-publisher'),
+            array('status' => 409)
+        );
+    }
+
     public function sanitizeJobForState($job)
     {
         if (!is_array($job)) {
@@ -443,6 +1044,25 @@ final class Plugin
             } else {
                 $job['deploymentProfile'] = $deploymentProfile;
             }
+        }
+        if (isset($job['ruleId'])) {
+            $ruleId = sanitize_text_field((string) $job['ruleId']);
+            if ($ruleId === '') {
+                unset($job['ruleId']);
+            } else {
+                $job['ruleId'] = $ruleId;
+            }
+        }
+        if (isset($job['coalesceKey'])) {
+            $coalesceKey = sanitize_text_field((string) $job['coalesceKey']);
+            if ($coalesceKey === '') {
+                unset($job['coalesceKey']);
+            } else {
+                $job['coalesceKey'] = $coalesceKey;
+            }
+        }
+        if (isset($job['attempt'])) {
+            $job['attempt'] = max(0, (int) $job['attempt']);
         }
         if (isset($job['enqueueSource'])) {
             $enqueueSource = sanitize_text_field((string) $job['enqueueSource']);
@@ -3891,56 +4511,80 @@ final class Plugin
             return;
         }
 
-        $offset = absint(get_option(self::OPTION_AUDIT_CURSOR_KEY, 0));
-        if ($offset > $size) {
-            $offset = 0;
-        }
-
-        $raw = $this->readFileContents($auditPath);
-        if (!is_string($raw) || $raw === '') {
+        $knownOffset = absint(get_option(self::OPTION_AUDIT_CURSOR_KEY, 0));
+        if ($knownOffset === $size) {
             return;
         }
 
-        $rawSize = strlen($raw);
-        if ($offset > $rawSize) {
-            $offset = 0;
-        }
+        try {
+            $this->withAuditMutationLock(function () use ($auditPath): void {
+                clearstatcache(true, $auditPath);
+                $currentSize = filesize($auditPath);
+                if (!is_int($currentSize) || $currentSize < 0) {
+                    return;
+                }
 
-        $slice = $offset > 0 ? substr($raw, $offset) : $raw;
-        if (!is_string($slice) || $slice === '') {
-            return;
-        }
+                $offset = absint(get_option(self::OPTION_AUDIT_CURSOR_KEY, 0));
+                if ($offset > $currentSize) {
+                    $offset = 0;
+                }
+                if ($offset === $currentSize) {
+                    return;
+                }
 
-        preg_match_all('/.*(?:\r\n|\n|\r|$)/', $slice, $matches);
-        $chunks = isset($matches[0]) && is_array($matches[0]) ? $matches[0] : array();
+                $handle = @fopen($auditPath, 'rb');
+                if (!is_resource($handle)) {
+                    return;
+                }
+                try {
+                    if ($offset > 0 && fseek($handle, $offset) !== 0) {
+                        return;
+                    }
+                    $slice = stream_get_contents($handle);
+                } finally {
+                    fclose($handle);
+                }
+                if (!is_string($slice) || $slice === '') {
+                    return;
+                }
 
-        foreach ($chunks as $line) {
-            if ($line === '') {
-                continue;
-            }
+                $lastCompleteLine = strrpos($slice, "\n");
+                if ($lastCompleteLine === false) {
+                    return;
+                }
+                $complete = substr($slice, 0, $lastCompleteLine + 1);
+                $lines = preg_split('/\r?\n/', rtrim($complete, "\r\n"));
+                $cleanEvents = array();
+                foreach (is_array($lines) ? $lines : array() as $line) {
+                    if ($line === '') {
+                        continue;
+                    }
+                    $decoded = json_decode($line, true);
+                    if (!is_array($decoded)) {
+                        continue;
+                    }
+                    $cleanEvents[] = $this->sanitizeAuditLogEntry(array(
+                        'occurredAt' => isset($decoded['occurredAt']) ? (string) $decoded['occurredAt'] : gmdate('c'),
+                        'eventType' => isset($decoded['eventType']) ? (string) $decoded['eventType'] : 'runtime-event',
+                        'status' => isset($decoded['status']) ? (string) $decoded['status'] : 'info',
+                        'actorSource' => isset($decoded['actorSource']) ? (string) $decoded['actorSource'] : 'queue-runner',
+                        'actorUserId' => null,
+                        'jobId' => isset($decoded['jobId']) ? (string) $decoded['jobId'] : '',
+                        'command' => isset($decoded['command']) ? (string) $decoded['command'] : '',
+                        'message' => isset($decoded['message']) ? (string) $decoded['message'] : '',
+                        'details' => is_array($decoded['details'] ?? null) ? $decoded['details'] : array(),
+                    ));
+                }
 
-            $decoded = json_decode(trim($line), true);
-            if (!is_array($decoded)) {
-                continue;
-            }
-
-            $this->appendAuditLogEntry(array(
-                'occurredAt' => isset($decoded['occurredAt']) ? (string) $decoded['occurredAt'] : gmdate('c'),
-                'eventType' => isset($decoded['eventType']) ? (string) $decoded['eventType'] : 'runtime-event',
-                'status' => isset($decoded['status']) ? (string) $decoded['status'] : 'info',
-                'actorSource' => isset($decoded['actorSource']) ? (string) $decoded['actorSource'] : 'queue-runner',
-                'actorUserId' => null,
-                'jobId' => isset($decoded['jobId']) ? (string) $decoded['jobId'] : '',
-                'command' => isset($decoded['command']) ? (string) $decoded['command'] : '',
-                'message' => isset($decoded['message']) ? (string) $decoded['message'] : '',
-                'details' => is_array($decoded['details'] ?? null) ? $decoded['details'] : array(),
-            ));
-        }
-
-        $newOffset = $offset + strlen($slice);
-
-        if (is_int($newOffset) && $newOffset >= 0) {
-            update_option(self::OPTION_AUDIT_CURSOR_KEY, $newOffset, false);
+                if (!empty($cleanEvents)) {
+                    $entries = $this->getAuditLogEntries();
+                    $entries = array_merge(array_reverse($cleanEvents), $entries);
+                    update_option(self::OPTION_AUDIT_LOG_KEY, array_slice($entries, 0, 2000), false);
+                }
+                update_option(self::OPTION_AUDIT_CURSOR_KEY, $offset + strlen($complete), false);
+            });
+        } catch (\RuntimeException) {
+            // Audit ingestion is best-effort. A later request retries from the same cursor.
         }
     }
 
@@ -3956,16 +4600,48 @@ final class Plugin
 
     public function appendAuditLogEntry(array $entry): void
     {
-        $entries = $this->getAuditLogEntries();
         $clean = $this->sanitizeAuditLogEntry($entry);
-        array_unshift($entries, $clean);
+        try {
+            $this->withAuditMutationLock(function () use ($clean): void {
+                $entries = $this->getAuditLogEntries();
+                array_unshift($entries, $clean);
+                update_option(self::OPTION_AUDIT_LOG_KEY, array_slice($entries, 0, 2000), false);
+            });
+        } catch (\RuntimeException) {
+            // Audit logging must not fail the requested queue operation.
+        }
+    }
 
-        $maxEntries = 2000;
-        if (count($entries) > $maxEntries) {
-            $entries = array_slice($entries, 0, $maxEntries);
+    private function withAuditMutationLock(callable $callback): mixed
+    {
+        $deadline = microtime(true) + 2.0;
+        $lockToken = wp_generate_uuid4();
+        while (true) {
+            $payload = array('token' => $lockToken, 'createdAt' => gmdate('c'));
+            if (add_option(self::OPTION_AUDIT_MUTATION_LOCK_KEY, $payload, '', false)) {
+                break;
+            }
+
+            $existing = get_option(self::OPTION_AUDIT_MUTATION_LOCK_KEY);
+            $createdAt = is_array($existing) ? strtotime((string) ($existing['createdAt'] ?? '')) : false;
+            if (!is_array($existing) || ($createdAt !== false && (time() - $createdAt) > 30)) {
+                delete_option(self::OPTION_AUDIT_MUTATION_LOCK_KEY);
+                continue;
+            }
+            if (microtime(true) >= $deadline) {
+                throw new \RuntimeException('Timed out acquiring audit mutation lock.');
+            }
+            usleep(50000);
         }
 
-        update_option(self::OPTION_AUDIT_LOG_KEY, $entries, false);
+        try {
+            return $callback();
+        } finally {
+            $existing = get_option(self::OPTION_AUDIT_MUTATION_LOCK_KEY);
+            if (is_array($existing) && (($existing['token'] ?? '') === $lockToken)) {
+                delete_option(self::OPTION_AUDIT_MUTATION_LOCK_KEY);
+            }
+        }
     }
 
     private function sanitizeAuditLogEntry(array $entry): array

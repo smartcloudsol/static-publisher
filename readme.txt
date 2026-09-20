@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.21
+Stable tag: 1.0.22
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -26,7 +26,7 @@ The plugin provides:
 
 * Admin UI for export configuration
 * Runtime config generation in uploads
-* Job queueing (publish, crawl, deploy, invalidate, retry-timeouts, single URL)
+* Job queueing (publish, crawl, deploy, invalidate, retry-timeouts, single URL, targeted content sync)
 * Run status and log viewing
 
 The Node.js exporter provides:
@@ -504,6 +504,15 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.0.22 =
+* Dependencies: Bundle WP Suite Hub 2.5.16 so translation-catalog changes enqueue the matching static content refresh.
+* Standard jobs: Queue Professional/Agency content-sync work directly from the Jobs screen by selecting both the deployment target and exact enabled content-sync rule.
+* WordPress Abilities: Add smartcloud-static-publisher/schedule-job plus Publisher-governed read-only target and content-sync rule discovery tools for Agent Composer MCP.
+* Job status Ability: Return the actual job_id after scheduling and add smartcloud-static-publisher/get-job-status for queued position/jobs ahead, running state, completion time, and bounded redacted failure details.
+* Authorization: In protected Composer modes, require Publisher for publish and content-sync while Contributor remains sufficient for crawl and deploy; Open mode remains backward compatible.
+* Content-sync safety: Require an exact active baseline-ready rule and target pair, preserve its runner-owned rule and coalescing identity, and reject missing, mismatched, or duplicate rule identities.
+* Dependencies: Requires the separately installed @smart-cloud/publisher-exporter 1.1.63 runtime for discovery snapshots and manual content-sync scheduling.
+
 = 1.0.21 =
 * Privacy inventory: Authenticated exporter jobs submit the privacy-minimal cookie observation artifact to installed Consent providers for manual classification.
 * Targeted content sync: Add exact render and tombstone operations for plugin-owned public resources such as Content Relations JSON projections.
@@ -610,6 +619,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.22 =
+Install @smart-cloud/publisher-exporter 1.1.63 and restart the external queue runner so it writes the safe target/rule discovery snapshot, then restart or refresh Agent Composer MCP tool discovery after updating both plugins. The scheduling response now returns a job_id used by the read-only job-status tool. Before queueing a standard content-sync job, complete one successful normal publish so the selected rule and target pair has a ready baseline.
 
 = 1.0.21 =
 Install @smart-cloud/publisher-exporter 1.1.62 on every runner host. Before enabling Lambda rendering, rewriting, or deployment, redeploy the CDK stack and copy its newly generated remote-workers.json to the site's Static Publisher runtime directory; existing files without deployment targets are insufficient for delegated deploys. Remove obsolete PUBLISHER_REMOTE_* variables from cron. Run a crawl or publish to populate Consent candidates, and run one normal publish before relying on targeted plugin-resource updates.

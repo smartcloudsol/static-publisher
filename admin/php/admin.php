@@ -396,120 +396,18 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
     {
         $payload = $request->get_json_params();
         $data = is_array($payload) ? $payload : array();
-
-        $command = isset($data['command']) ? sanitize_text_field((string) $data['command']) : '';
-        $allowedCommands = array('publish', 'crawl', 'deploy', 'invalidate', 'retry-timeouts', 'url');
-        $allowedCrawlModes = array('full', 'incremental');
-        $defaultCrawlMode = 'full';
-
-        if (!in_array($command, $allowedCommands, true)) {
+        $result = $this->plugin->enqueueStandardJob($data, 'wp-admin', get_current_user_id());
+        if (is_wp_error($result)) {
+            $errorData = $result->get_error_data();
+            $status = is_array($errorData) ? max(400, (int) ($errorData['status'] ?? 400)) : 400;
             return new WP_REST_Response(array(
                 'success' => false,
-                'message' => __('Invalid command.', 'smartcloud-static-publisher'),
-            ), 400);
+                'code' => $result->get_error_code(),
+                'message' => $result->get_error_message(),
+            ), $status);
         }
 
-        $crawlMode = isset($data['crawlMode']) ? sanitize_text_field((string) $data['crawlMode']) : $defaultCrawlMode;
-        if (!in_array($crawlMode, $allowedCrawlModes, true)) {
-            $crawlMode = $defaultCrawlMode;
-        }
-        if (!in_array($command, array('publish', 'crawl'), true)) {
-            $crawlMode = 'full';
-        }
-        $url = '';
-        if ($command === 'url') {
-            $url = isset($data['url']) ? sanitize_text_field((string) $data['url']) : '';
-            if ($url === '') {
-                return new WP_REST_Response(array(
-                    'success' => false,
-                    'message' => __('URL path is required for the url command.', 'smartcloud-static-publisher'),
-                ), 400);
-            }
-        }
-
-        $deploymentProfile = isset($data['deploymentProfile'])
-            ? $this->plugin->sanitizeDeploymentProfileName($data['deploymentProfile'])
-            : '';
-        if (!in_array($command, array('publish', 'deploy', 'invalidate'), true)) {
-            $deploymentProfile = '';
-        }
-
-        $awsCredCommands = array('publish', 'deploy', 'invalidate');
-        $awsTempCreds = null;
-        if (in_array($command, $awsCredCommands, true) && isset($data['awsTempCreds']) && is_array($data['awsTempCreds'])) {
-            $sanitizedCreds = $this->plugin->sanitizeAwsTempCreds($data['awsTempCreds']);
-            $hasAnyCred = !empty($sanitizedCreds['accessKeyId']) || !empty($sanitizedCreds['secretAccessKey']) || !empty($sanitizedCreds['sessionToken']);
-            if ($hasAnyCred && (empty($sanitizedCreds['accessKeyId']) || empty($sanitizedCreds['secretAccessKey']))) {
-                return new WP_REST_Response(array(
-                    'success' => false,
-                    'message' => __('Temp AWS creds require both access key ID and secret access key.', 'smartcloud-static-publisher'),
-                ), 400);
-            }
-            if (!empty($sanitizedCreds['accessKeyId']) || !empty($sanitizedCreds['secretAccessKey']) || !empty($sanitizedCreds['sessionToken'])) {
-                $awsTempCreds = $sanitizedCreds;
-            }
-        }
-
-        $paths = $this->plugin->getRuntimePaths();
-        wp_mkdir_p($paths['runtime']);
-        $this->plugin->writeJsonFile($paths['config'], $this->plugin->buildRuntimeConfig($this->plugin->getConfig()));
-        $job = array(
-            'id' => wp_generate_uuid4(),
-            'command' => $command,
-            'enqueueSource' => 'manual',
-            'url' => $url,
-            'wpsuite' => $this->plugin->getWpSuiteRuntimeConfig(),
-            'status' => 'queued',
-            'createdAt' => gmdate('c'),
-            'createdBy' => get_current_user_id(),
-        );
-        if (in_array($command, array('publish', 'crawl'), true)) {
-            $job['crawlMode'] = $crawlMode;
-        }
-        if ($deploymentProfile !== '') {
-            $job['deploymentProfile'] = $deploymentProfile;
-        }
-        if (is_array($awsTempCreds)) {
-            $job['awsTempCreds'] = $awsTempCreds;
-        }
-
-        try {
-            $queueLength = $this->plugin->withQueueMutationLock(function () use ($paths, $job) {
-                $queue = $this->plugin->readQueue();
-                $queue[] = $job;
-                $this->plugin->writeJsonFile($paths['queue'], array_values($queue));
-                return count($queue);
-            });
-        } catch (\RuntimeException $error) {
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => __('Queue is busy. Please try again in a moment.', 'smartcloud-static-publisher'),
-            ), 409);
-        }
-
-        $this->plugin->appendAuditLogEntry(array(
-            'eventType' => 'job-created',
-            'status' => 'success',
-            'actorSource' => 'wp-admin',
-            'actorUserId' => get_current_user_id(),
-            'jobId' => (string) $job['id'],
-            'command' => (string) $job['command'],
-            'message' => __('Job queued from admin UI.', 'smartcloud-static-publisher'),
-            'details' => array(
-                'queueLength' => $queueLength,
-                'usesTempAwsCreds' => is_array($awsTempCreds),
-                'crawlMode' => $crawlMode,
-                'deploymentProfile' => $deploymentProfile,
-                'url' => $url,
-            ),
-        ));
-
-        return new WP_REST_Response(array(
-            'success' => true,
-            'job' => $this->plugin->sanitizeJobForState($job),
-            'queueLength' => $queueLength,
-            'message' => __('Job queued. External runner can pick it from runtime queue.json.', 'smartcloud-static-publisher'),
-        ), 200);
+        return new WP_REST_Response($result, 200);
     }
 
     public function handleDeleteJob(WP_REST_Request $request): WP_REST_Response
@@ -661,6 +559,12 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
                 'success' => false,
                 'message' => __('Queued job not found.', 'smartcloud-static-publisher'),
             ), 404);
+        }
+        if (($job['command'] ?? '') === 'content-sync') {
+            return new WP_REST_Response(array(
+                'success' => false,
+                'message' => __('Content-sync depends on the queue runner runtime state and cannot be replayed from a downloaded config alone.', 'smartcloud-static-publisher'),
+            ), 409);
         }
 
         $payload = $this->plugin->buildJobDownloadPayload(

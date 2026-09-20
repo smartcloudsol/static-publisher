@@ -1831,6 +1831,7 @@ export default function Main({ store }: MainProps) {
   const [command, setCommand] = useState<JobCommand>("publish");
   const [selectedCrawlMode, setCrawlMode] = useState<CrawlMode | null>(null);
   const [deploymentProfile, setDeploymentProfile] = useState("");
+  const [contentSyncRuleId, setContentSyncRuleId] = useState("");
   const [singleUrl, setSingleUrl] = useState("");
   const [selectedLog, setSelectedLog] = useState("");
   const [rawLogContent, setRawLogContent] = useState("");
@@ -2973,13 +2974,36 @@ export default function Main({ store }: MainProps) {
   const proSchedulerEditingEnabled = IS_PREMIUM_BUILD && hasActiveSubscription;
   const canManageExtraDeploymentProfiles =
     IS_PREMIUM_BUILD && hasActiveSubscription;
-  const canQueueJobs = hasSavedConfig;
   const commandSupportsCrawlMode = command === "publish" || command === "crawl";
   const commandSupportsDeploymentProfile =
-    command === "publish" || command === "deploy" || command === "invalidate";
+    command === "publish" ||
+    command === "deploy" ||
+    command === "invalidate" ||
+    command === "content-sync";
   const selectedQueueDeploymentProfile = deploymentProfiles[deploymentProfile]
     ? deploymentProfile
     : "";
+  const contentSyncRuleOptions = useMemo(() => {
+    if (!savedContentSyncConfig?.scheduler?.enabled) return [];
+    const target = selectedQueueDeploymentProfile || "default";
+    return savedContentSyncConfig.scheduler.rules
+      .filter(
+        (rule) =>
+          rule.command === "content-sync" &&
+          rule.enabled !== false &&
+          (String(rule.deploymentProfile ?? "").trim() || "default") === target,
+      )
+      .map((rule) => ({ value: rule.id, label: rule.id }));
+  }, [savedContentSyncConfig, selectedQueueDeploymentProfile]);
+  const selectedQueueContentSyncRule = contentSyncRuleOptions.some(
+    (option) => option.value === contentSyncRuleId,
+  )
+    ? contentSyncRuleId
+    : "";
+  const canQueueJobs =
+    hasSavedConfig &&
+    (command !== "content-sync" ||
+      (hasIncrementalAccess && selectedQueueContentSyncRule !== ""));
   const showIncrementalFallbackWarning =
     commandSupportsCrawlMode &&
     crawlMode === "incremental" &&
@@ -3288,7 +3312,8 @@ export default function Main({ store }: MainProps) {
       const supportsAwsCreds =
         command === "publish" ||
         command === "deploy" ||
-        command === "invalidate";
+        command === "invalidate" ||
+        command === "content-sync";
       const hasAnyAwsCred =
         awsTempCreds.accessKeyId.trim() !== "" ||
         awsTempCreds.secretAccessKey.trim() !== "" ||
@@ -3302,6 +3327,10 @@ export default function Main({ store }: MainProps) {
           deploymentProfile:
             commandSupportsDeploymentProfile && selectedQueueDeploymentProfile
               ? selectedQueueDeploymentProfile
+              : undefined,
+          contentSyncRuleId:
+            command === "content-sync"
+              ? selectedQueueContentSyncRule
               : undefined,
           url: command === "url" ? singleUrl : "",
           awsTempCreds:
@@ -4913,7 +4942,7 @@ export default function Main({ store }: MainProps) {
                                 </Text>
                                 <Text size="sm">
                                   {__(
-                                    "Scheduled content sync cannot continue until a successful full or incremental publish establishes a new verified baseline.",
+                                    "Content sync cannot continue until a successful full or incremental publish establishes a new verified baseline.",
                                     TEXT_DOMAIN,
                                   )}
                                 </Text>
@@ -4939,7 +4968,7 @@ export default function Main({ store }: MainProps) {
                             </Alert>
                           )}
                           <SimpleGrid
-                            cols={{ base: 1, md: 5 }}
+                            cols={{ base: 1, md: 6 }}
                             spacing="md"
                             verticalSpacing="md"
                           >
@@ -4961,7 +4990,8 @@ export default function Main({ store }: MainProps) {
                                 if (
                                   nextCommand !== "publish" &&
                                   nextCommand !== "deploy" &&
-                                  nextCommand !== "invalidate"
+                                  nextCommand !== "invalidate" &&
+                                  nextCommand !== "content-sync"
                                 ) {
                                   setDeploymentProfile("");
                                 }
@@ -4978,6 +5008,10 @@ export default function Main({ store }: MainProps) {
                                 {
                                   value: "url",
                                   label: "url (single path export)",
+                                },
+                                {
+                                  value: "content-sync",
+                                  label: "content-sync",
                                 },
                               ]}
                             />
@@ -5054,7 +5088,7 @@ export default function Main({ store }: MainProps) {
                               description={
                                 !commandSupportsDeploymentProfile
                                   ? __(
-                                      "Used only for publish, deploy, and invalidate commands.",
+                                      "Used only for publish, deploy, invalidate, and content-sync commands.",
                                       TEXT_DOMAIN,
                                     )
                                   : deploymentProfileNames.length === 0
@@ -5075,6 +5109,36 @@ export default function Main({ store }: MainProps) {
                                 )
                               }
                               data={deploymentProfileOptions}
+                            />
+                            <Select
+                              style={queueJobCellStyle}
+                              label={infoLabel(
+                                __("Content-sync rule", TEXT_DOMAIN),
+                                "job-content-sync-rule",
+                              )}
+                              value={selectedQueueContentSyncRule}
+                              disabled={command !== "content-sync"}
+                              description={
+                                command !== "content-sync"
+                                  ? __(
+                                      "Used only for content-sync jobs.",
+                                      TEXT_DOMAIN,
+                                    )
+                                  : contentSyncRuleOptions.length === 0
+                                    ? __(
+                                        "No enabled content-sync rule uses this target.",
+                                        TEXT_DOMAIN,
+                                      )
+                                    : __(
+                                        "Required. Select the exact scheduler rule to run.",
+                                        TEXT_DOMAIN,
+                                      )
+                              }
+                              placeholder={__("Select a rule", TEXT_DOMAIN)}
+                              onChange={(value) =>
+                                setContentSyncRuleId(value || "")
+                              }
+                              data={contentSyncRuleOptions}
                             />
                             <Box style={queueJobActionsStyle}>
                               <Stack gap="sm">
@@ -5103,6 +5167,16 @@ export default function Main({ store }: MainProps) {
                               <Text size="sm">
                                 {__(
                                   "Incremental crawl was selected, but this site has no active WPSuite subscription. The exporter will run a full crawl for the queued job.",
+                                  TEXT_DOMAIN,
+                                )}
+                              </Text>
+                            </Alert>
+                          )}
+                          {command === "content-sync" && (
+                            <Alert mt="md" color="blue" variant="light">
+                              <Text size="sm">
+                                {__(
+                                  "Standard content-sync requires an exact enabled rule ID for the selected target. The rule must be active and baseline-ready, and the queue runner must have refreshed its discovery snapshot.",
                                   TEXT_DOMAIN,
                                 )}
                               </Text>
@@ -5438,18 +5512,20 @@ export default function Main({ store }: MainProps) {
                                     )}
                                   </Stack>
                                   <Group gap="xs">
-                                    <Button
-                                      variant="subtle"
-                                      color="blue"
-                                      size="xs"
-                                      leftSection={<IconDownload size={14} />}
-                                      loading={downloadingJobId === item.id}
-                                      onClick={() =>
-                                        void downloadQueuedJobConfig(item.id)
-                                      }
-                                    >
-                                      {__("Download config", TEXT_DOMAIN)}
-                                    </Button>
+                                    {item.command !== "content-sync" && (
+                                      <Button
+                                        variant="subtle"
+                                        color="blue"
+                                        size="xs"
+                                        leftSection={<IconDownload size={14} />}
+                                        loading={downloadingJobId === item.id}
+                                        onClick={() =>
+                                          void downloadQueuedJobConfig(item.id)
+                                        }
+                                      >
+                                        {__("Download config", TEXT_DOMAIN)}
+                                      </Button>
+                                    )}
                                     <Button
                                       variant="subtle"
                                       color="red"
@@ -6895,7 +6971,7 @@ export default function Main({ store }: MainProps) {
               <Alert color="yellow" variant="light">
                 <Text size="sm">
                   {__(
-                    "Content sync is subscription-gated and scheduler-only. A successful normal publish must establish a trusted baseline before this rule can deploy targeted changes.",
+                    "Content sync is subscription-gated. This rule supplies the scope for scheduled runs and for standard content-sync jobs targeting the same deployment profile. A successful normal publish must establish a trusted baseline first.",
                     TEXT_DOMAIN,
                   )}
                 </Text>
@@ -7359,7 +7435,7 @@ export default function Main({ store }: MainProps) {
         <Stack gap="sm">
           <Text size="sm" c="dimmed">
             {__(
-              "Used only for queued publish/deploy/invalidate jobs. Credentials are short-lived and should be rotated regularly.",
+              "Used only for queued publish/deploy/invalidate/content-sync jobs. Credentials are short-lived and should be rotated regularly.",
               TEXT_DOMAIN,
             )}
           </Text>

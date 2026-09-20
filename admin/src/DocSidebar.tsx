@@ -709,7 +709,7 @@ const pages = {
       </Title>
       <Text>
         {__(
-          "Select which command the queue runner should execute: crawl, deploy, invalidate, publish, retry-timeouts, or single URL export.",
+          "Select which command the queue runner should execute: crawl, deploy, invalidate, publish, content-sync, retry-timeouts, or single URL export.",
           TEXT_DOMAIN,
         )}
       </Text>
@@ -721,13 +721,25 @@ const pages = {
       </Title>
       <Text>
         {__(
-          "Used by publish, deploy, and invalidate jobs when you want to target a named Extra Deployment Target instead of the base target. Leave it empty to use the base target settings.",
+          "Used by publish, deploy, invalidate, and content-sync jobs when you want to target a named Extra Deployment Target instead of the base target. Leave it empty to use the base target settings.",
           TEXT_DOMAIN,
         )}
       </Text>
       <Text mt="xs">
         {__(
           "This selector does not create a new crawl snapshot. It references Extra Deployment Targets saved through the linked WPSuite site config, while the local runtime or downloaded config only keeps the selected target override id.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+
+      <Title order={3} mt="md" id="job-content-sync-rule">
+        <span className="highlightable">
+          {__("Content-sync Rule", TEXT_DOMAIN)}
+        </span>
+      </Title>
+      <Text>
+        {__(
+          "Required for a standard content-sync job. Select the exact enabled scheduler rule for the chosen deployment target. The rule must have a ready baseline from a successful normal publish.",
           TEXT_DOMAIN,
         )}
       </Text>
