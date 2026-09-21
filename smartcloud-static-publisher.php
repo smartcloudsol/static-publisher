@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.0.22
+ * Version:           1.0.23
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.0.22';
+const VERSION = '1.0.23';
 
 final class Plugin
 {
@@ -259,8 +259,53 @@ final class Plugin
         }
 
         $siteAddressOrigin = $this->resolveSiteAddressOrigin();
+        $remoteWorkers = isset($input['remoteWorkers']) && is_array($input['remoteWorkers'])
+            ? $input['remoteWorkers']
+            : array();
+        $renderWorker = isset($remoteWorkers['render']) && is_array($remoteWorkers['render'])
+            ? $remoteWorkers['render']
+            : array();
+        $rewriteWorker = isset($remoteWorkers['rewrite']) && is_array($remoteWorkers['rewrite'])
+            ? $remoteWorkers['rewrite']
+            : array();
+        $deployWorker = isset($remoteWorkers['deploy']) && is_array($remoteWorkers['deploy'])
+            ? $remoteWorkers['deploy']
+            : array();
 
-        return array(
+        $hasUnifiedDelegation = array_key_exists('lambdaDelegationEnabled', $input);
+        $lambdaDelegationEnabled = !empty($input['lambdaDelegationEnabled']);
+        $renderEnabled = $hasUnifiedDelegation
+            ? $lambdaDelegationEnabled
+            : !empty($renderWorker['enabled']);
+        $rewriteEnabled = $hasUnifiedDelegation
+            ? $lambdaDelegationEnabled
+            : (array_key_exists('enabled', $rewriteWorker) ? !empty($rewriteWorker['enabled']) : $renderEnabled);
+        $deployEnabled = $hasUnifiedDelegation
+            ? $lambdaDelegationEnabled
+            : (array_key_exists('enabled', $deployWorker) ? !empty($deployWorker['enabled']) : $renderEnabled);
+
+        $hasUnifiedConcurrency = array_key_exists('processingConcurrency', $input);
+        $processingConcurrency = min(100, max(1, absint($input['processingConcurrency'] ?? 1)));
+        $localConcurrency = $hasUnifiedConcurrency
+            ? $processingConcurrency
+            : max(1, absint($input['concurrency'] ?? 1));
+        $assetDownloadConcurrency = $hasUnifiedConcurrency
+            ? $processingConcurrency
+            : max(1, absint($input['assetDownloadConcurrency'] ?? $localConcurrency));
+        $rewriteConcurrency = $hasUnifiedConcurrency
+            ? $processingConcurrency
+            : max(1, absint($input['rewriteConcurrency'] ?? $assetDownloadConcurrency));
+        $remoteRenderConcurrency = $hasUnifiedConcurrency
+            ? $processingConcurrency
+            : min(100, max(1, absint($renderWorker['concurrency'] ?? $localConcurrency)));
+        $remoteRewriteConcurrency = $hasUnifiedConcurrency
+            ? $processingConcurrency
+            : min(100, max(1, absint($rewriteWorker['concurrency'] ?? $rewriteConcurrency)));
+        $remoteDeployConcurrency = $hasUnifiedConcurrency
+            ? $processingConcurrency
+            : min(100, max(1, absint($deployWorker['concurrency'] ?? 8)));
+
+        $config = array(
             'sourceOrigin' => $siteAddressOrigin,
             'targetOrigin' => $this->sanitizeOriginOrDot($input['targetOrigin'] ?? ''),
             'ignoreHttpsErrors' => !empty($input['ignoreHttpsErrors']),
@@ -293,30 +338,26 @@ final class Plugin
                 'height' => max(320, absint($input['viewport']['height'] ?? 1200)),
             ),
             'maxPages' => max(0, absint($input['maxPages'] ?? 0)),
-            'concurrency' => max(1, absint($input['concurrency'] ?? 1)),
-            'assetDownloadConcurrency' => max(1, absint($input['assetDownloadConcurrency'] ?? ($input['concurrency'] ?? 1))),
-            'rewriteConcurrency' => max(1, absint($input['rewriteConcurrency'] ?? ($input['assetDownloadConcurrency'] ?? ($input['concurrency'] ?? 1)))),
+            'concurrency' => $localConcurrency,
+            'assetDownloadConcurrency' => $assetDownloadConcurrency,
+            'rewriteConcurrency' => $rewriteConcurrency,
             'remoteWorkers' => array(
                 'render' => array(
-                    'enabled' => !empty($input['remoteWorkers']['render']['enabled']),
-                    'concurrency' => min(100, max(1, absint($input['remoteWorkers']['render']['concurrency'] ?? ($input['concurrency'] ?? 1)))),
-                    'maxAttempts' => min(5, max(1, absint($input['remoteWorkers']['render']['maxAttempts'] ?? 2))),
+                    'enabled' => $renderEnabled,
+                    'concurrency' => $remoteRenderConcurrency,
+                    'maxAttempts' => min(5, max(1, absint($renderWorker['maxAttempts'] ?? 2))),
                 ),
                 'rewrite' => array(
-                    'enabled' => array_key_exists('enabled', $input['remoteWorkers']['rewrite'] ?? array())
-                        ? !empty($input['remoteWorkers']['rewrite']['enabled'])
-                        : !empty($input['remoteWorkers']['render']['enabled']),
-                    'concurrency' => min(100, max(1, absint($input['remoteWorkers']['rewrite']['concurrency'] ?? ($input['rewriteConcurrency'] ?? 8)))),
-                    'batchSize' => min(500, max(1, absint($input['remoteWorkers']['rewrite']['batchSize'] ?? 25))),
-                    'maxAttempts' => min(5, max(1, absint($input['remoteWorkers']['rewrite']['maxAttempts'] ?? 2))),
+                    'enabled' => $rewriteEnabled,
+                    'concurrency' => $remoteRewriteConcurrency,
+                    'batchSize' => min(500, max(1, absint($rewriteWorker['batchSize'] ?? 25))),
+                    'maxAttempts' => min(5, max(1, absint($rewriteWorker['maxAttempts'] ?? 2))),
                 ),
                 'deploy' => array(
-                    'enabled' => array_key_exists('enabled', $input['remoteWorkers']['deploy'] ?? array())
-                        ? !empty($input['remoteWorkers']['deploy']['enabled'])
-                        : !empty($input['remoteWorkers']['render']['enabled']),
-                    'concurrency' => min(100, max(1, absint($input['remoteWorkers']['deploy']['concurrency'] ?? 8))),
-                    'batchSize' => min(500, max(1, absint($input['remoteWorkers']['deploy']['batchSize'] ?? 50))),
-                    'maxAttempts' => min(5, max(1, absint($input['remoteWorkers']['deploy']['maxAttempts'] ?? 2))),
+                    'enabled' => $deployEnabled,
+                    'concurrency' => $remoteDeployConcurrency,
+                    'batchSize' => min(500, max(1, absint($deployWorker['batchSize'] ?? 50))),
+                    'maxAttempts' => min(5, max(1, absint($deployWorker['maxAttempts'] ?? 2))),
                 ),
             ),
             's3' => array(
@@ -331,6 +372,15 @@ final class Plugin
                 'invalidationPaths' => $this->sanitizePathList($input['cloudFront']['invalidationPaths'] ?? array('/*')),
             ),
         );
+
+        if ($hasUnifiedDelegation) {
+            $config['lambdaDelegationEnabled'] = $lambdaDelegationEnabled;
+        }
+        if ($hasUnifiedConcurrency) {
+            $config['processingConcurrency'] = $processingConcurrency;
+        }
+
+        return $config;
     }
 
     private function sanitizeOrigin($value): string

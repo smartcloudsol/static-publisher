@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.22
+Stable tag: 1.0.23
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -283,8 +283,12 @@ Yes. Deploy and invalidate now write detailed progress logs in addition to crawl
 = Does SDK deploy re-upload unchanged files every time? =
 No. SDK deploy now skips unchanged files using S3 ETag + size fast checks, with checksum metadata fallback (`x-amz-meta-wpsuite-sha256`) when ETag is not decisive.
 
-= Can pages and assets use different concurrency values? =
-Yes. `concurrency` controls parallel page rendering workers, `assetDownloadConcurrency` controls the later asset download phase, and `rewriteConcurrency` controls the final text rewrite pass. If `rewriteConcurrency` is omitted it falls back to `assetDownloadConcurrency`, so existing configurations keep the earlier behavior.
+= How do Processing concurrency and Lambda delegation work? =
+`Processing concurrency` sets the local page-render, asset-download, and final rewrite worker counts together. When `Delegate processing to Lambda` is enabled, the same value is also the coordinator's requested fan-out for each delegated page-render, asset-fetch, rewrite, or deploy phase.
+
+With full delegation, rendered HTML and downloaded assets remain in the worker S3 workspace for Lambda rewrite and direct S3-to-S3 deployment; the coordinator does not download them for a second HTML scan or restage the completed export. It still owns the dynamic URL queues, safety and incremental decisions, compact manifests, retries, logs, invalidation, and terminal job state. The setting is not an account-wide Lambda concurrency limit: function reserved concurrency, regional quotas, other sites, available batches, and downstream capacity can reduce effective parallelism.
+
+Existing installations that saved different legacy settings for individual phases keep those values until an administrator changes the corresponding common control. The Configuration screen shows a warning for that mixed legacy state. Lambda batch sizes and retry counts remain internal compatibility settings and are not normal UI controls.
 
 = How should I use blocked query fragments? =
 Use `blockedSearchFragments` for preview or editor query patterns that must never enter the crawl queue. The setting is empty by default. If your WordPress setup exposes plugin-specific preview URLs, add those fragments explicitly to your config. Typical examples include page-builder previews, WordPress Customizer preview parameters, multilingual editor preview flags, and similar per-plugin markers. This matters because exported page output paths ignore query strings, so a preview URL can overwrite the canonical output for the same page path.
@@ -504,6 +508,11 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.0.23 =
+* Processing controls: Replace separate local and Lambda phase controls with one Processing concurrency field and one Delegate processing to Lambda switch, while preserving mixed legacy settings until an administrator explicitly changes the common controls.
+* Lambda data plane: Keep rendered HTML and fetched assets in the S3 workspace, discover their dependent URLs in workers, rewrite workspace objects in place, and deploy them S3-to-S3 without downloading and restaging the export through the coordinator.
+* Dependencies: Requires the separately installed @smart-cloud/publisher-exporter 1.1.65 runtime and an updated CDK worker configuration containing the asset worker.
+
 = 1.0.22 =
 * Dependencies: Bundle WP Suite Hub 2.5.16 so translation-catalog changes enqueue the matching static content refresh.
 * Standard jobs: Queue Professional/Agency content-sync work directly from the Jobs screen by selecting both the deployment target and exact enabled content-sync rule.
@@ -619,6 +628,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.23 =
+Install @smart-cloud/publisher-exporter 1.1.65 and restart the external queue runner. Before enabling Lambda delegation, deploy the updated worker stack and install its new remote-workers.json containing functions.asset. Existing mixed local/remote settings remain unchanged until an administrator explicitly saves the unified delegation and concurrency controls.
 
 = 1.0.22 =
 Install @smart-cloud/publisher-exporter 1.1.63 and restart the external queue runner so it writes the safe target/rule discovery snapshot, then restart or refresh Agent Composer MCP tool discovery after updating both plugins. The scheduling response now returns a job_id used by the read-only job-status tool. Before queueing a standard content-sync job, complete one successful normal publish so the selected rule and target pair has a ready baseline.

@@ -443,84 +443,38 @@ const pages = {
         </List.Item>
       </List>
 
-      <Title order={3} mt="md" id="concurrency">
-        <span className="highlightable">{__("Concurrency", TEXT_DOMAIN)}</span>
-      </Title>
-      <Text>
-        {__(
-          "Number of parallel page workers during crawl. Higher values may speed up exports but increase source load.",
-          TEXT_DOMAIN,
-        )}
-      </Text>
-
-      <Title order={3} mt="md" id="asset-download-concurrency">
+      <Title order={3} mt="md" id="lambda-delegation-enabled">
         <span className="highlightable">
-          {__("Asset Download Concurrency", TEXT_DOMAIN)}
+          {__("Delegate Processing to Lambda", TEXT_DOMAIN)}
         </span>
       </Title>
       <Text>
         {__(
-          "Number of parallel asset download workers after page rendering completes. This can usually be higher than page concurrency because static asset fetches are much cheaper than full page renders.",
-          TEXT_DOMAIN,
-        )}
-      </Text>
-
-      <Title order={3} mt="md" id="rewrite-concurrency">
-        <span className="highlightable">
-          {__("Rewrite Concurrency", TEXT_DOMAIN)}
-        </span>
-      </Title>
-      <Text>
-        {__(
-          "Number of parallel workers used by the final full-output text rewrite pass after crawl/save and asset download phases complete.",
+          "Delegates Playwright rendering, asset retrieval and text discovery, final rewrite, and S3 deployment to Lambda workers. Rendered pages and assets stay in the S3 workspace through rewrite and deployment; the coordinator keeps only URL queues, policy decisions, compact manifests, retries, logs, and terminal job state.",
           TEXT_DOMAIN,
         )}
       </Text>
       <Text mt="xs">
         {__(
-          "When omitted, it falls back to asset download concurrency. This setting does not control the inline rewrite done during each individual page save.",
+          "Before enabling delegation, install a current CDK-generated remote-workers.json containing render, asset, rewrite, and deploy workers, then verify all workers and deployment targets. A delegated phase fails explicitly if its worker or result is unavailable; it never falls back silently to local execution.",
           TEXT_DOMAIN,
         )}
       </Text>
 
-      <Title order={3} mt="md" id="remote-render-enabled">
+      <Title order={3} mt="md" id="processing-concurrency">
         <span className="highlightable">
-          {__("Lambda Workers", TEXT_DOMAIN)}
+          {__("Processing Concurrency", TEXT_DOMAIN)}
         </span>
       </Title>
       <Text>
         {__(
-          "Moves Playwright rendering, final text rewrite, and S3 deployment to independently configurable Lambda workers while the EC2 exporter remains the lightweight coordinator.",
+          "Sets the local page-render, asset-download, and final rewrite worker counts. When Lambda delegation is enabled, the same value is the coordinator's requested fan-out for each delegated render, asset, rewrite, or deploy phase.",
           TEXT_DOMAIN,
         )}
       </Text>
       <Text mt="xs">
         {__(
-          "Before enabling a remote phase, install the CDK-generated remote-workers.json file in this site's Static Publisher runtime directory. An enabled phase fails explicitly if its worker or result is unavailable; it never falls back silently to local execution.",
-          TEXT_DOMAIN,
-        )}
-      </Text>
-
-      <Title order={3} mt="md" id="remote-render-concurrency">
-        <span className="highlightable">
-          {__("Lambda Render Concurrency", TEXT_DOMAIN)}
-        </span>
-      </Title>
-      <Text>
-        {__(
-          "Maximum page-render Lambda invocations coordinated in parallel. When Lambda rendering is enabled this value replaces the normal crawl concurrency; asset download and rewrite concurrency remain independent.",
-          TEXT_DOMAIN,
-        )}
-      </Text>
-
-      <Title order={3} mt="md" id="remote-render-max-attempts">
-        <span className="highlightable">
-          {__("Lambda Render Attempts", TEXT_DOMAIN)}
-        </span>
-      </Title>
-      <Text>
-        {__(
-          "Maximum attempts for each remotely rendered page, including the first invocation. Keep this low so persistent origin or worker failures finish predictably.",
+          "This is not an account-wide Lambda concurrency limit. Function reserved concurrency, regional quotas, other sites, available batches, and downstream capacity can lower the effective parallelism. Lambda batch sizes and retry limits remain internal compatibility settings rather than normal UI controls.",
           TEXT_DOMAIN,
         )}
       </Text>

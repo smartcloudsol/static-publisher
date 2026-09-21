@@ -14,6 +14,7 @@ import {
   Modal,
   MultiSelect,
   NavLink,
+  NumberInput,
   PasswordInput,
   ScrollArea,
   SegmentedControl,
@@ -75,19 +76,6 @@ function switchControlStyles(disabled = false): Record<string, CSSProperties> {
     },
     track: { cursor },
     label: { cursor },
-  };
-}
-
-function alignedTextInputStyles(): Record<string, CSSProperties> {
-  return {
-    root: {
-      display: "flex",
-      flexDirection: "column",
-      height: "100%",
-    },
-    wrapper: {
-      marginTop: "auto",
-    },
   };
 }
 
@@ -289,6 +277,8 @@ type PublisherConfig = {
   concurrency: number;
   assetDownloadConcurrency: number;
   rewriteConcurrency: number;
+  lambdaDelegationEnabled?: boolean;
+  processingConcurrency?: number;
   remoteWorkers: {
     render: {
       enabled: boolean;
@@ -516,6 +506,8 @@ const DEFAULT_CONFIG: PublisherConfig = {
   concurrency: 1,
   assetDownloadConcurrency: 1,
   rewriteConcurrency: 1,
+  lambdaDelegationEnabled: false,
+  processingConcurrency: 1,
   remoteWorkers: {
     render: {
       enabled: false,
@@ -716,19 +708,42 @@ function normalizePublisherConfig(config: PublisherConfig): PublisherConfig {
     DEFAULT_CONFIG.scheduler,
   );
 
-  const concurrency = Math.max(1, Number(config.concurrency || 1));
-  const assetDownloadConcurrency = Math.max(
+  const legacyConcurrency = Math.max(1, Number(config.concurrency || 1));
+  const legacyAssetDownloadConcurrency = Math.max(
     1,
-    Number(config.assetDownloadConcurrency || concurrency),
+    Number(config.assetDownloadConcurrency || legacyConcurrency),
   );
-  const rewriteConcurrency = Math.max(
+  const legacyRewriteConcurrency = Math.max(
     1,
-    Number(config.rewriteConcurrency || assetDownloadConcurrency),
+    Number(
+      config.rewriteConcurrency || legacyAssetDownloadConcurrency,
+    ),
   );
+  const hasUnifiedConcurrency =
+    Number.isFinite(Number(config.processingConcurrency)) &&
+    Number(config.processingConcurrency) > 0;
+  const processingConcurrency = hasUnifiedConcurrency
+    ? Math.min(100, Math.max(1, Number(config.processingConcurrency)))
+    : undefined;
+  const concurrency = processingConcurrency ?? legacyConcurrency;
+  const assetDownloadConcurrency =
+    processingConcurrency ?? legacyAssetDownloadConcurrency;
+  const rewriteConcurrency =
+    processingConcurrency ?? legacyRewriteConcurrency;
+  const hasUnifiedDelegation =
+    typeof config.lambdaDelegationEnabled === "boolean";
+  const lambdaDelegationEnabled = hasUnifiedDelegation
+    ? config.lambdaDelegationEnabled
+    : undefined;
   const remoteRender = config.remoteWorkers?.render;
   const remoteRenderConcurrency = Math.min(
     100,
-    Math.max(1, Number(remoteRender?.concurrency || concurrency)),
+    Math.max(
+      1,
+      Number(
+        processingConcurrency ?? remoteRender?.concurrency ?? concurrency,
+      ),
+    ),
   );
   const remoteRenderMaxAttempts = Math.min(
     5,
@@ -741,12 +756,21 @@ function normalizePublisherConfig(config: PublisherConfig): PublisherConfig {
     defaults: { concurrency: number; batchSize: number },
   ) => ({
     enabled:
-      typeof phase?.enabled === "boolean"
+      lambdaDelegationEnabled !== undefined
+        ? lambdaDelegationEnabled
+        : typeof phase?.enabled === "boolean"
         ? phase.enabled
         : remoteRender?.enabled === true,
     concurrency: Math.min(
       100,
-      Math.max(1, Number(phase?.concurrency || defaults.concurrency)),
+      Math.max(
+        1,
+        Number(
+          processingConcurrency ??
+            phase?.concurrency ??
+            defaults.concurrency,
+        ),
+      ),
     ),
     batchSize: Math.min(
       500,
@@ -761,9 +785,16 @@ function normalizePublisherConfig(config: PublisherConfig): PublisherConfig {
     concurrency,
     assetDownloadConcurrency,
     rewriteConcurrency,
+    ...(lambdaDelegationEnabled !== undefined
+      ? { lambdaDelegationEnabled }
+      : {}),
+    ...(processingConcurrency !== undefined
+      ? { processingConcurrency }
+      : {}),
     remoteWorkers: {
       render: {
-        enabled: remoteRender?.enabled === true,
+        enabled:
+          lambdaDelegationEnabled ?? (remoteRender?.enabled === true),
         concurrency: remoteRenderConcurrency,
         maxAttempts: remoteRenderMaxAttempts,
       },
@@ -779,6 +810,67 @@ function normalizePublisherConfig(config: PublisherConfig): PublisherConfig {
     scheduler,
     defaultDeploymentProfile: "",
     deploymentProfiles,
+  };
+}
+
+function legacyLambdaConfigurationMix(config: PublisherConfig): {
+  enabled: boolean;
+  concurrency: boolean;
+} {
+  const enabled =
+    typeof config.lambdaDelegationEnabled !== "boolean" &&
+    new Set([
+      config.remoteWorkers.render.enabled,
+      config.remoteWorkers.rewrite.enabled,
+      config.remoteWorkers.deploy.enabled,
+    ]).size > 1;
+  const concurrency =
+    !Number.isFinite(Number(config.processingConcurrency)) &&
+    new Set([
+      config.concurrency,
+      config.assetDownloadConcurrency,
+      config.rewriteConcurrency,
+      config.remoteWorkers.render.concurrency,
+      config.remoteWorkers.rewrite.concurrency,
+      config.remoteWorkers.deploy.concurrency,
+    ]).size > 1;
+  return { enabled, concurrency };
+}
+
+function synchronizedLambdaDelegation(
+  config: PublisherConfig,
+  enabled: boolean,
+): PublisherConfig {
+  return {
+    ...config,
+    lambdaDelegationEnabled: enabled,
+    remoteWorkers: {
+      render: { ...config.remoteWorkers.render, enabled },
+      rewrite: { ...config.remoteWorkers.rewrite, enabled },
+      deploy: { ...config.remoteWorkers.deploy, enabled },
+    },
+  };
+}
+
+function synchronizedProcessingConcurrency(
+  config: PublisherConfig,
+  requested: number,
+): PublisherConfig {
+  const concurrency = Math.min(
+    100,
+    Math.max(1, Number.isFinite(requested) ? requested : 1),
+  );
+  return {
+    ...config,
+    processingConcurrency: concurrency,
+    concurrency,
+    assetDownloadConcurrency: concurrency,
+    rewriteConcurrency: concurrency,
+    remoteWorkers: {
+      render: { ...config.remoteWorkers.render, concurrency },
+      rewrite: { ...config.remoteWorkers.rewrite, concurrency },
+      deploy: { ...config.remoteWorkers.deploy, concurrency },
+    },
   };
 }
 
@@ -1823,6 +1915,10 @@ export default function Main({ store }: MainProps) {
   const [config, setConfig] = useState<PublisherConfig>(
     boot?.settings ? normalizePublisherConfig(boot.settings) : DEFAULT_CONFIG,
   );
+  const [processingConcurrencyDraft, setProcessingConcurrencyDraft] = useState<
+    string | number
+  >(config.processingConcurrency ?? config.concurrency);
+  const processingConcurrencyEditingRef = useRef(false);
   const [state, setState] = useState<StateResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -2768,6 +2864,14 @@ export default function Main({ store }: MainProps) {
   }, [selectedLog]);
 
   useEffect(() => {
+    if (!processingConcurrencyEditingRef.current) {
+      setProcessingConcurrencyDraft(
+        config.processingConcurrency ?? config.concurrency,
+      );
+    }
+  }, [config.concurrency, config.processingConcurrency]);
+
+  useEffect(() => {
     if (!autoRefresh) return;
     const id = setInterval(() => {
       void loadState({ syncConfig: false, refreshSelectedLog: true });
@@ -3050,6 +3154,11 @@ export default function Main({ store }: MainProps) {
     }
     return options;
   }, [contentSyncPostTypes, schedulerRuleDraft.postTypes]);
+  const legacyLambdaMix = legacyLambdaConfigurationMix(config);
+  const lambdaDelegationEnabled =
+    config.lambdaDelegationEnabled ?? config.remoteWorkers.render.enabled;
+  const processingConcurrency =
+    config.processingConcurrency ?? config.concurrency;
   const navPrimary: Array<{
     value: AdminTab;
     label: string;
@@ -3852,415 +3961,120 @@ export default function Main({ store }: MainProps) {
                             { value: "debug", label: "debug" },
                           ]}
                         />
-                        <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }}>
-                          <TextInput
-                            label={infoLabel(
-                              __("Concurrency", TEXT_DOMAIN),
-                              "concurrency",
-                            )}
-                            description={__(
-                              "Number of parallel page workers during crawl.",
-                              TEXT_DOMAIN,
-                            )}
-                            type="number"
-                            styles={alignedTextInputStyles()}
-                            value={String(config.concurrency)}
-                            onChange={(event) =>
-                              setConfig((prev) => ({
-                                ...prev,
-                                concurrency: Number(
-                                  event.currentTarget.value || 1,
-                                ),
-                              }))
-                            }
-                          />
-                          <TextInput
-                            label={infoLabel(
-                              __("Asset download concurrency", TEXT_DOMAIN),
-                              "asset-download-concurrency",
-                            )}
-                            description={__(
-                              "Number of parallel asset download workers after page rendering finishes.",
-                              TEXT_DOMAIN,
-                            )}
-                            type="number"
-                            styles={alignedTextInputStyles()}
-                            value={String(config.assetDownloadConcurrency)}
-                            onChange={(event) =>
-                              setConfig((prev) => ({
-                                ...prev,
-                                assetDownloadConcurrency: Number(
-                                  event.currentTarget.value || 1,
-                                ),
-                              }))
-                            }
-                          />
-                          <TextInput
-                            label={infoLabel(
-                              __("Rewrite concurrency", TEXT_DOMAIN),
-                              "rewrite-concurrency",
-                            )}
-                            description={__(
-                              "Number of parallel text rewrite workers in the final rewrite phase. Defaults to asset download concurrency when not set.",
-                              TEXT_DOMAIN,
-                            )}
-                            type="number"
-                            styles={alignedTextInputStyles()}
-                            value={String(config.rewriteConcurrency)}
-                            onChange={(event) =>
-                              setConfig((prev) => ({
-                                ...prev,
-                                rewriteConcurrency: Number(
-                                  event.currentTarget.value ||
-                                    prev.assetDownloadConcurrency ||
-                                    1,
-                                ),
-                              }))
-                            }
-                          />
-                        </SimpleGrid>
                         <Divider
-                          label={__("Lambda rendering", TEXT_DOMAIN)}
+                          label={__("Processing", TEXT_DOMAIN)}
                           labelPosition="left"
                         />
-                        <Switch
-                          label={infoLabel(
-                            __(
-                              "Delegate page rendering to Lambda",
+                        {(legacyLambdaMix.enabled ||
+                          legacyLambdaMix.concurrency) && (
+                          <Alert
+                            color="yellow"
+                            icon={<IconAlertCircle size={18} />}
+                            title={__(
+                              "Legacy Lambda settings differ",
                               TEXT_DOMAIN,
-                            ),
-                            "remote-render-enabled",
-                          )}
-                          description={__(
-                            "Requires the CDK-generated remote-workers.json file in this site's Static Publisher runtime directory. Rendering never falls back silently to local Playwright.",
-                            TEXT_DOMAIN,
-                          )}
-                          checked={config.remoteWorkers.render.enabled}
-                          onChange={(event) =>
-                            setConfig((prev) => ({
-                              ...prev,
-                              remoteWorkers: {
-                                ...prev.remoteWorkers,
-                                render: {
-                                  ...prev.remoteWorkers.render,
-                                  enabled: event.currentTarget.checked,
-                                },
-                              },
-                            }))
-                          }
-                          size="sm"
-                          styles={switchControlStyles()}
-                        />
+                            )}
+                          >
+                            {__(
+                              "This saved configuration uses different per-phase delegation or concurrency values. Those legacy values remain unchanged until you change the corresponding common control below. Review both controls before saving.",
+                              TEXT_DOMAIN,
+                            )}
+                          </Alert>
+                        )}
                         <SimpleGrid cols={{ base: 1, sm: 2 }}>
-                          <TextInput
+                          <Switch
                             label={infoLabel(
-                              __("Lambda render concurrency", TEXT_DOMAIN),
-                              "remote-render-concurrency",
+                              __(
+                                "Delegate processing to Lambda",
+                                TEXT_DOMAIN,
+                              ),
+                              "lambda-delegation-enabled",
                             )}
                             description={__(
-                              "Maximum number of page-render Lambda invocations coordinated in parallel. This replaces crawl concurrency while Lambda rendering is enabled.",
+                              "Delegates page rendering, asset retrieval and discovery, final text rewrite, and S3 deployment to Lambda. Export bodies stay in the S3 workspace; the coordinator keeps URL queues, policy decisions, compact manifests, retries, and logs. Enabled phases never fall back silently to local execution.",
                               TEXT_DOMAIN,
                             )}
-                            type="number"
+                            checked={lambdaDelegationEnabled}
+                            onChange={(event) =>
+                              setConfig((prev) =>
+                                synchronizedLambdaDelegation(
+                                  prev,
+                                  event.currentTarget.checked,
+                                ),
+                              )
+                            }
+                            size="sm"
+                            styles={switchControlStyles()}
+                          />
+                          <NumberInput
+                            label={infoLabel(
+                              __("Processing concurrency", TEXT_DOMAIN),
+                              "processing-concurrency",
+                            )}
+                            description={__(
+                              "Sets the local crawl, asset-download, and rewrite worker counts and the requested Lambda fan-out for each delegated render, asset, rewrite, or deploy phase. It is not an account-wide Lambda concurrency limit.",
+                              TEXT_DOMAIN,
+                            )}
                             min={1}
                             max={100}
-                            styles={alignedTextInputStyles()}
-                            value={String(
-                              config.remoteWorkers.render.concurrency,
-                            )}
-                            onChange={(event) =>
-                              setConfig((prev) => ({
-                                ...prev,
-                                remoteWorkers: {
-                                  ...prev.remoteWorkers,
-                                  render: {
-                                    ...prev.remoteWorkers.render,
-                                    concurrency: Number(
-                                      event.currentTarget.value || 1,
-                                    ),
-                                  },
-                                },
-                              }))
+                            step={1}
+                            role="spinbutton"
+                            aria-valuemin={1}
+                            aria-valuemax={100}
+                            aria-valuenow={
+                              typeof processingConcurrencyDraft === "number"
+                                ? processingConcurrencyDraft
+                                : undefined
                             }
-                            disabled={!config.remoteWorkers.render.enabled}
-                          />
-                          <TextInput
-                            label={infoLabel(
-                              __("Lambda render attempts", TEXT_DOMAIN),
-                              "remote-render-max-attempts",
-                            )}
-                            description={__(
-                              "Maximum attempts per page render, including the first invocation (1-5).",
-                              TEXT_DOMAIN,
-                            )}
-                            type="number"
-                            min={1}
-                            max={5}
-                            styles={alignedTextInputStyles()}
-                            value={String(
-                              config.remoteWorkers.render.maxAttempts,
-                            )}
-                            onChange={(event) =>
-                              setConfig((prev) => ({
-                                ...prev,
-                                remoteWorkers: {
-                                  ...prev.remoteWorkers,
-                                  render: {
-                                    ...prev.remoteWorkers.render,
-                                    maxAttempts: Number(
-                                      event.currentTarget.value || 1,
-                                    ),
-                                  },
-                                },
-                              }))
-                            }
-                            disabled={!config.remoteWorkers.render.enabled}
-                          />
-                        </SimpleGrid>
-                        <Switch
-                          label={infoLabel(
-                            __("Delegate text rewrite to Lambda", TEXT_DOMAIN),
-                            "remote-rewrite-enabled",
-                          )}
-                          description={__(
-                            "Stages text files in the worker S3 workspace, rewrites bounded batches in Lambda, and restores the verified results to the export tree.",
-                            TEXT_DOMAIN,
-                          )}
-                          checked={config.remoteWorkers.rewrite.enabled}
-                          onChange={(event) =>
-                            setConfig((prev) => ({
-                              ...prev,
-                              remoteWorkers: {
-                                ...prev.remoteWorkers,
-                                rewrite: {
-                                  ...prev.remoteWorkers.rewrite,
-                                  enabled: event.currentTarget.checked,
-                                },
+                            allowDecimal={false}
+                            allowNegative={false}
+                            clampBehavior="none"
+                            value={processingConcurrencyDraft}
+                            styles={{
+                              root: {
+                                display: "flex",
+                                flexDirection: "column",
+                                height: "100%",
                               },
-                            }))
-                          }
-                          size="sm"
-                          styles={switchControlStyles()}
-                        />
-                        <SimpleGrid cols={{ base: 1, sm: 3 }}>
-                          <TextInput
-                            label={infoLabel(
-                              __("Lambda rewrite concurrency", TEXT_DOMAIN),
-                              "remote-rewrite-concurrency",
-                            )}
-                            description={__(
-                              "Maximum concurrent rewrite Lambda invocations.",
-                              TEXT_DOMAIN,
-                            )}
-                            type="number"
-                            min={1}
-                            max={100}
-                            styles={alignedTextInputStyles()}
-                            value={String(
-                              config.remoteWorkers.rewrite.concurrency,
-                            )}
-                            onChange={(event) =>
-                              setConfig((prev) => ({
-                                ...prev,
-                                remoteWorkers: {
-                                  ...prev.remoteWorkers,
-                                  rewrite: {
-                                    ...prev.remoteWorkers.rewrite,
-                                    concurrency: Number(
-                                      event.currentTarget.value || 1,
-                                    ),
-                                  },
-                                },
-                              }))
-                            }
-                            disabled={!config.remoteWorkers.rewrite.enabled}
-                          />
-                          <TextInput
-                            label={infoLabel(
-                              __("Lambda rewrite batch size", TEXT_DOMAIN),
-                              "remote-rewrite-batch-size",
-                            )}
-                            description={__(
-                              "Text files processed by one Lambda invocation (1-500).",
-                              TEXT_DOMAIN,
-                            )}
-                            type="number"
-                            min={1}
-                            max={500}
-                            styles={alignedTextInputStyles()}
-                            value={String(
-                              config.remoteWorkers.rewrite.batchSize,
-                            )}
-                            onChange={(event) =>
-                              setConfig((prev) => ({
-                                ...prev,
-                                remoteWorkers: {
-                                  ...prev.remoteWorkers,
-                                  rewrite: {
-                                    ...prev.remoteWorkers.rewrite,
-                                    batchSize: Number(
-                                      event.currentTarget.value || 1,
-                                    ),
-                                  },
-                                },
-                              }))
-                            }
-                            disabled={!config.remoteWorkers.rewrite.enabled}
-                          />
-                          <TextInput
-                            label={infoLabel(
-                              __("Lambda rewrite attempts", TEXT_DOMAIN),
-                              "remote-rewrite-max-attempts",
-                            )}
-                            description={__(
-                              "Attempts per rewrite batch (1-5).",
-                              TEXT_DOMAIN,
-                            )}
-                            type="number"
-                            min={1}
-                            max={5}
-                            styles={alignedTextInputStyles()}
-                            value={String(
-                              config.remoteWorkers.rewrite.maxAttempts,
-                            )}
-                            onChange={(event) =>
-                              setConfig((prev) => ({
-                                ...prev,
-                                remoteWorkers: {
-                                  ...prev.remoteWorkers,
-                                  rewrite: {
-                                    ...prev.remoteWorkers.rewrite,
-                                    maxAttempts: Number(
-                                      event.currentTarget.value || 1,
-                                    ),
-                                  },
-                                },
-                              }))
-                            }
-                            disabled={!config.remoteWorkers.rewrite.enabled}
-                          />
-                        </SimpleGrid>
-                        <Switch
-                          label={infoLabel(
-                            __("Delegate S3 deployment to Lambda", TEXT_DOMAIN),
-                            "remote-deploy-enabled",
-                          )}
-                          description={__(
-                            "Stages the finalized export in S3, then uses Lambda for checked S3-to-S3 copies and manifest-backed deletions.",
-                            TEXT_DOMAIN,
-                          )}
-                          checked={config.remoteWorkers.deploy.enabled}
-                          onChange={(event) =>
-                            setConfig((prev) => ({
-                              ...prev,
-                              remoteWorkers: {
-                                ...prev.remoteWorkers,
-                                deploy: {
-                                  ...prev.remoteWorkers.deploy,
-                                  enabled: event.currentTarget.checked,
-                                },
+                              wrapper: {
+                                marginTop: "var(--mantine-spacing-xs)",
                               },
-                            }))
-                          }
-                          size="sm"
-                          styles={switchControlStyles()}
-                        />
-                        <SimpleGrid cols={{ base: 1, sm: 3 }}>
-                          <TextInput
-                            label={infoLabel(
-                              __("Lambda deploy concurrency", TEXT_DOMAIN),
-                              "remote-deploy-concurrency",
-                            )}
-                            description={__(
-                              "Maximum concurrent deploy Lambda invocations.",
-                              TEXT_DOMAIN,
-                            )}
-                            type="number"
-                            min={1}
-                            max={100}
-                            styles={alignedTextInputStyles()}
-                            value={String(
-                              config.remoteWorkers.deploy.concurrency,
-                            )}
-                            onChange={(event) =>
-                              setConfig((prev) => ({
-                                ...prev,
-                                remoteWorkers: {
-                                  ...prev.remoteWorkers,
-                                  deploy: {
-                                    ...prev.remoteWorkers.deploy,
-                                    concurrency: Number(
-                                      event.currentTarget.value || 1,
-                                    ),
-                                  },
-                                },
-                              }))
-                            }
-                            disabled={!config.remoteWorkers.deploy.enabled}
-                          />
-                          <TextInput
-                            label={infoLabel(
-                              __("Lambda deploy batch size", TEXT_DOMAIN),
-                              "remote-deploy-batch-size",
-                            )}
-                            description={__(
-                              "Objects checked or copied per invocation (1-500).",
-                              TEXT_DOMAIN,
-                            )}
-                            type="number"
-                            min={1}
-                            max={500}
-                            styles={alignedTextInputStyles()}
-                            value={String(
-                              config.remoteWorkers.deploy.batchSize,
-                            )}
-                            onChange={(event) =>
-                              setConfig((prev) => ({
-                                ...prev,
-                                remoteWorkers: {
-                                  ...prev.remoteWorkers,
-                                  deploy: {
-                                    ...prev.remoteWorkers.deploy,
-                                    batchSize: Number(
-                                      event.currentTarget.value || 1,
-                                    ),
-                                  },
-                                },
-                              }))
-                            }
-                            disabled={!config.remoteWorkers.deploy.enabled}
-                          />
-                          <TextInput
-                            label={infoLabel(
-                              __("Lambda deploy attempts", TEXT_DOMAIN),
-                              "remote-deploy-max-attempts",
-                            )}
-                            description={__(
-                              "Attempts per deploy batch (1-5).",
-                              TEXT_DOMAIN,
-                            )}
-                            type="number"
-                            min={1}
-                            max={5}
-                            styles={alignedTextInputStyles()}
-                            value={String(
-                              config.remoteWorkers.deploy.maxAttempts,
-                            )}
-                            onChange={(event) =>
-                              setConfig((prev) => ({
-                                ...prev,
-                                remoteWorkers: {
-                                  ...prev.remoteWorkers,
-                                  deploy: {
-                                    ...prev.remoteWorkers.deploy,
-                                    maxAttempts: Number(
-                                      event.currentTarget.value || 1,
-                                    ),
-                                  },
-                                },
-                              }))
-                            }
-                            disabled={!config.remoteWorkers.deploy.enabled}
+                            }}
+                            onFocus={() => {
+                              processingConcurrencyEditingRef.current = true;
+                            }}
+                            onChange={(value) => {
+                              setProcessingConcurrencyDraft(value);
+                              if (
+                                typeof value === "number" &&
+                                Number.isFinite(value) &&
+                                value >= 1 &&
+                                value <= 100
+                              ) {
+                                setConfig((prev) =>
+                                  synchronizedProcessingConcurrency(
+                                    prev,
+                                    value,
+                                  ),
+                                );
+                              }
+                            }}
+                            onBlur={() => {
+                              processingConcurrencyEditingRef.current = false;
+                              const requested = Number(
+                                processingConcurrencyDraft,
+                              );
+                              const normalized = Number.isFinite(requested)
+                                ? Math.min(100, Math.max(1, requested))
+                                : processingConcurrency;
+                              setProcessingConcurrencyDraft(normalized);
+                              setConfig((prev) =>
+                                synchronizedProcessingConcurrency(
+                                  prev,
+                                  normalized,
+                                ),
+                              );
+                            }}
                           />
                         </SimpleGrid>
                         <SimpleGrid cols={{ base: 1, sm: 2 }}>

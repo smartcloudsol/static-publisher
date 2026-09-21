@@ -168,13 +168,15 @@ async function openFixture(
   currentBaselineStatus = null,
   cardPresentation = null,
   currentProgress = null,
+  lambdaConfigOverride = null,
 ) {
   const page = await browser.newPage({ viewport });
+  let savedConfig = null;
   page.setDefaultTimeout(5000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(
-    ({ holdAccess }) => {
+    ({ holdAccess, lambdaConfigOverride }) => {
       window.holdAccess = holdAccess;
       window.fixtureConfig = {
         sourceOrigin: "https://source.example.test",
@@ -228,6 +230,16 @@ async function openFixture(
           ],
         },
       };
+      if (lambdaConfigOverride) {
+        window.fixtureConfig = {
+          ...window.fixtureConfig,
+          ...lambdaConfigOverride,
+          remoteWorkers: {
+            ...window.fixtureConfig.remoteWorkers,
+            ...(lambdaConfigOverride.remoteWorkers || {}),
+          },
+        };
+      }
       window.WpSuite = {
         siteSettings: {
           accountId: "fixture",
@@ -245,7 +257,7 @@ async function openFixture(
         },
       };
     },
-    { holdAccess },
+    { holdAccess, lambdaConfigOverride },
   );
   await page.route("**/*", async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -260,7 +272,13 @@ async function openFixture(
       return route.fulfill({ contentType: "text/css", body: css });
     const config = await page.evaluate(() => window.fixtureConfig);
     let json;
-    if (path === "/publisher/state")
+    if (
+      path === "/publisher/config" &&
+      route.request().method() === "POST"
+    ) {
+      savedConfig = route.request().postDataJSON();
+      json = { config: savedConfig, message: "Configuration saved." };
+    } else if (path === "/publisher/state")
       json = {
         config,
         hasSavedConfiguration: true,
@@ -336,7 +354,7 @@ async function openFixture(
       `${error.message}\nBrowser errors: ${errors.join("; ")}\n${await page.locator("body").innerText()}`,
     );
   }
-  return { page, errors };
+  return { page, errors, getSavedConfig: () => savedConfig };
 }
 
 async function choose(page, label, value) {
@@ -420,76 +438,132 @@ try {
     });
   }
 
-  await test("Lambda pipeline settings are managed from Configuration", async () => {
-    const { page, errors } = await openFixture({ width: 1440, height: 1000 });
+  await test("common Lambda controls preserve mixed legacy settings until touched", async () => {
+    const { page, errors, getSavedConfig } = await openFixture(
+      { width: 1440, height: 1000 },
+      false,
+      null,
+      null,
+      null,
+      {
+        concurrency: 1,
+        assetDownloadConcurrency: 2,
+        rewriteConcurrency: 3,
+        remoteWorkers: {
+          render: { enabled: true, concurrency: 4, maxAttempts: 4 },
+          rewrite: {
+            enabled: false,
+            concurrency: 5,
+            batchSize: 37,
+            maxAttempts: 3,
+          },
+          deploy: {
+            enabled: true,
+            concurrency: 6,
+            batchSize: 73,
+            maxAttempts: 5,
+          },
+        },
+      },
+    );
     try {
       await page.getByText("Configuration", { exact: true }).click();
-      const renderLabel = page.getByText("Delegate page rendering to Lambda", {
-        exact: true,
-      });
-      await renderLabel.waitFor();
-      const toggle = renderLabel
+      const delegationLabel = page.getByText(
+        "Delegate processing to Lambda",
+        { exact: true },
+      );
+      await delegationLabel.waitFor();
+      const toggle = delegationLabel
         .locator('xpath=ancestor::*[contains(@class,"mantine-Switch-root")]')
         .locator('input[type="checkbox"]');
-      const localConcurrencyInputs = [
-        page.getByRole("spinbutton", { name: /^Concurrency/ }),
-        page.getByRole("spinbutton", { name: /^Asset download concurrency/ }),
-        page.getByRole("spinbutton", { name: /^Rewrite concurrency/ }),
-      ];
-      const lambdaConcurrency = page.getByRole("spinbutton", {
-        name: /^Lambda render concurrency/,
+      const processingConcurrency = page.getByRole("spinbutton", {
+        name: /^Processing concurrency/,
       });
-      const attempts = page.getByRole("spinbutton", {
-        name: /^Lambda render attempts/,
+      const legacyWarning = page.getByText(
+        "Legacy Lambda settings differ",
+        { exact: true },
+      );
+      const saveButton = page.getByRole("button", {
+        name: "Save WordPress Configuration",
       });
-      const rewriteToggle = page
-        .getByText("Delegate text rewrite to Lambda", { exact: true })
-        .locator('xpath=ancestor::*[contains(@class,"mantine-Switch-root")]')
-        .locator('input[type="checkbox"]');
-      const deployToggle = page
-        .getByText("Delegate S3 deployment to Lambda", { exact: true })
-        .locator('xpath=ancestor::*[contains(@class,"mantine-Switch-root")]')
-        .locator('input[type="checkbox"]');
-      const rewriteBatch = page.getByRole("spinbutton", {
-        name: /^Lambda rewrite batch size/,
-      });
-      const deployBatch = page.getByRole("spinbutton", {
-        name: /^Lambda deploy batch size/,
-      });
-      const localInputTops = await Promise.all(
-        localConcurrencyInputs.map(
-          async (input) => (await input.boundingBox()).y,
-        ),
+      const waitForConfigSave = () =>
+        page.waitForResponse((response) => {
+          const request = response.request();
+          return (
+            new URL(response.url()).pathname === "/publisher/config" &&
+            request.method() === "POST"
+          );
+        });
+      await legacyWarning.waitFor();
+      assert.equal(await toggle.isChecked(), true);
+      assert.equal(await processingConcurrency.inputValue(), "1");
+      assert.equal(
+        await page.getByText("Delegate page rendering to Lambda").count(),
+        0,
       );
-      assert.ok(
-        Math.max(...localInputTops) - Math.min(...localInputTops) <= 1,
-        `Local concurrency inputs must align: ${localInputTops.join(", ")}`,
+      assert.equal(
+        await page.getByRole("spinbutton", {
+          name: /^Lambda rewrite batch size/,
+        }).count(),
+        0,
       );
-      assert.equal(await toggle.isChecked(), false);
-      assert.equal(await lambdaConcurrency.isDisabled(), true);
-      assert.equal(await attempts.isDisabled(), true);
-      assert.equal(await rewriteBatch.isDisabled(), true);
-      assert.equal(await deployBatch.isDisabled(), true);
-      const lambdaInputTops = await Promise.all(
-        [lambdaConcurrency, attempts].map(
-          async (input) => (await input.boundingBox()).y,
-        ),
+
+      await Promise.all([waitForConfigSave(), saveButton.click()]);
+      const untouchedSaved = getSavedConfig();
+      assert.equal(
+        Object.hasOwn(untouchedSaved, "lambdaDelegationEnabled"),
+        false,
       );
-      assert.ok(
-        Math.max(...lambdaInputTops) - Math.min(...lambdaInputTops) <= 1,
-        `Lambda inputs must align: ${lambdaInputTops.join(", ")}`,
+      assert.equal(
+        Object.hasOwn(untouchedSaved, "processingConcurrency"),
+        false,
       );
+      assert.deepEqual(
+        [
+          untouchedSaved.concurrency,
+          untouchedSaved.assetDownloadConcurrency,
+          untouchedSaved.rewriteConcurrency,
+        ],
+        [1, 2, 3],
+      );
+      assert.deepEqual(
+        ["render", "rewrite", "deploy"].map((phase) => [
+          untouchedSaved.remoteWorkers[phase].enabled,
+          untouchedSaved.remoteWorkers[phase].concurrency,
+        ]),
+        [
+          [true, 4],
+          [false, 5],
+          [true, 6],
+        ],
+      );
+      await legacyWarning.waitFor();
+
+      await toggle.uncheck();
+      await legacyWarning.waitFor();
+      await processingConcurrency.fill("");
+      assert.equal(await processingConcurrency.inputValue(), "");
+      await processingConcurrency.fill("8");
+      assert.equal(await processingConcurrency.inputValue(), "8");
+      await legacyWarning.waitFor({ state: "detached" });
       await toggle.check();
-      await lambdaConcurrency.fill("8");
-      await attempts.fill("3");
-      await rewriteToggle.check();
-      await deployToggle.check();
-      await rewriteBatch.fill("20");
-      await deployBatch.fill("40");
-      assert.equal(await lambdaConcurrency.inputValue(), "8");
-      assert.equal(await attempts.inputValue(), "3");
-      assert.equal(await rewriteBatch.inputValue(), "20");
-      assert.equal(await deployBatch.inputValue(), "40");
+      await Promise.all([waitForConfigSave(), saveButton.click()]);
+
+      const saved = getSavedConfig();
+      assert.equal(saved.lambdaDelegationEnabled, true);
+      assert.equal(saved.processingConcurrency, 8);
+      assert.equal(saved.concurrency, 8);
+      assert.equal(saved.assetDownloadConcurrency, 8);
+      assert.equal(saved.rewriteConcurrency, 8);
+      for (const phase of ["render", "rewrite", "deploy"]) {
+        assert.equal(saved.remoteWorkers[phase].enabled, true);
+        assert.equal(saved.remoteWorkers[phase].concurrency, 8);
+      }
+      assert.equal(saved.remoteWorkers.render.maxAttempts, 4);
+      assert.equal(saved.remoteWorkers.rewrite.batchSize, 37);
+      assert.equal(saved.remoteWorkers.rewrite.maxAttempts, 3);
+      assert.equal(saved.remoteWorkers.deploy.batchSize, 73);
+      assert.equal(saved.remoteWorkers.deploy.maxAttempts, 5);
       assert.deepEqual(errors, []);
     } finally {
       await page.close();
