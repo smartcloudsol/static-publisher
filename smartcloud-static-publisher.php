@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.0.23
+ * Version:           1.0.24
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.0.23';
+const VERSION = '1.0.24';
 
 final class Plugin
 {
@@ -345,6 +345,7 @@ final class Plugin
                 'render' => array(
                     'enabled' => $renderEnabled,
                     'concurrency' => $remoteRenderConcurrency,
+                    'batchSize' => min(20, max(1, absint($renderWorker['batchSize'] ?? 5))),
                     'maxAttempts' => min(5, max(1, absint($renderWorker['maxAttempts'] ?? 2))),
                 ),
                 'rewrite' => array(

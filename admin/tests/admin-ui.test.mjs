@@ -120,7 +120,10 @@ function runtimeFixture(config, currentStatus, cardPresentation) {
       rule.id,
       canonicalizeContentSyncScope(rule),
     );
-    const coalesceKey = `content-sync:${rule.id}:${sha256Fingerprint({ scopeFingerprint, targetFingerprint }).slice(0, 32)}`;
+    const coalesceKey = `content-sync:${rule.id}:${sha256Fingerprint({
+      scopeFingerprint,
+      targetFingerprint,
+    }).slice(0, 32)}`;
     rules[coalesceKey] = {
       ruleId: rule.id,
       coalesceKey,
@@ -272,10 +275,7 @@ async function openFixture(
       return route.fulfill({ contentType: "text/css", body: css });
     const config = await page.evaluate(() => window.fixtureConfig);
     let json;
-    if (
-      path === "/publisher/config" &&
-      route.request().method() === "POST"
-    ) {
+    if (path === "/publisher/config" && route.request().method() === "POST") {
       savedConfig = route.request().postDataJSON();
       json = { config: savedConfig, message: "Configuration saved." };
     } else if (path === "/publisher/state")
@@ -351,7 +351,9 @@ async function openFixture(
     await page.getByRole("textbox", { name: /^Crawl mode/ }).waitFor();
   } catch (error) {
     throw new Error(
-      `${error.message}\nBrowser errors: ${errors.join("; ")}\n${await page.locator("body").innerText()}`,
+      `${error.message}\nBrowser errors: ${errors.join("; ")}\n${await page
+        .locator("body")
+        .innerText()}`,
     );
   }
   return { page, errors, getSavedConfig: () => savedConfig };
@@ -450,7 +452,12 @@ try {
         assetDownloadConcurrency: 2,
         rewriteConcurrency: 3,
         remoteWorkers: {
-          render: { enabled: true, concurrency: 4, maxAttempts: 4 },
+          render: {
+            enabled: true,
+            concurrency: 4,
+            batchSize: 7,
+            maxAttempts: 4,
+          },
           rewrite: {
             enabled: false,
             concurrency: 5,
@@ -468,10 +475,9 @@ try {
     );
     try {
       await page.getByText("Configuration", { exact: true }).click();
-      const delegationLabel = page.getByText(
-        "Delegate processing to Lambda",
-        { exact: true },
-      );
+      const delegationLabel = page.getByText("Delegate processing to Lambda", {
+        exact: true,
+      });
       await delegationLabel.waitFor();
       const toggle = delegationLabel
         .locator('xpath=ancestor::*[contains(@class,"mantine-Switch-root")]')
@@ -479,10 +485,18 @@ try {
       const processingConcurrency = page.getByRole("spinbutton", {
         name: /^Processing concurrency/,
       });
-      const legacyWarning = page.getByText(
-        "Legacy Lambda settings differ",
-        { exact: true },
-      );
+      const renderBatchSize = page.getByRole("spinbutton", {
+        name: /^Render batch size/,
+      });
+      const rewriteBatchSize = page.getByRole("spinbutton", {
+        name: /^Rewrite batch size/,
+      });
+      const deployBatchSize = page.getByRole("spinbutton", {
+        name: /^Deploy batch size/,
+      });
+      const legacyWarning = page.getByText("Legacy Lambda settings differ", {
+        exact: true,
+      });
       const saveButton = page.getByRole("button", {
         name: "Save WordPress Configuration",
       });
@@ -497,14 +511,34 @@ try {
       await legacyWarning.waitFor();
       assert.equal(await toggle.isChecked(), true);
       assert.equal(await processingConcurrency.inputValue(), "1");
+      assert.equal(await renderBatchSize.inputValue(), "7");
+      assert.equal(await rewriteBatchSize.inputValue(), "37");
+      assert.equal(await deployBatchSize.inputValue(), "73");
+      const processingBox = await processingConcurrency.boundingBox();
+      const toggleBox = await toggle.boundingBox();
+      const renderBox = await renderBatchSize.boundingBox();
+      const maxPagesBox = await page
+        .getByRole("spinbutton", { name: /^Max pages/ })
+        .boundingBox();
+      const rewriteBox = await rewriteBatchSize.boundingBox();
+      const deployBox = await deployBatchSize.boundingBox();
+      assert.ok(processingBox && toggleBox && processingBox.y < toggleBox.y);
+      assert.ok(
+        renderBox && maxPagesBox && Math.abs(renderBox.y - maxPagesBox.y) <= 1,
+      );
+      assert.ok(
+        rewriteBox && deployBox && Math.abs(rewriteBox.y - deployBox.y) <= 1,
+      );
       assert.equal(
         await page.getByText("Delegate page rendering to Lambda").count(),
         0,
       );
       assert.equal(
-        await page.getByRole("spinbutton", {
-          name: /^Lambda rewrite batch size/,
-        }).count(),
+        await page
+          .getByRole("spinbutton", {
+            name: /^Lambda rewrite batch size/,
+          })
+          .count(),
         0,
       );
 
@@ -518,6 +552,7 @@ try {
         Object.hasOwn(untouchedSaved, "processingConcurrency"),
         false,
       );
+      assert.equal(untouchedSaved.remoteWorkers.render.batchSize, 7);
       assert.deepEqual(
         [
           untouchedSaved.concurrency,
@@ -539,8 +574,24 @@ try {
       );
       await legacyWarning.waitFor();
 
+      await renderBatchSize.fill("");
+      assert.equal(await renderBatchSize.inputValue(), "");
+      await renderBatchSize.fill("10");
+      assert.equal(await renderBatchSize.inputValue(), "10");
+      await rewriteBatchSize.fill("");
+      assert.equal(await rewriteBatchSize.inputValue(), "");
+      await rewriteBatchSize.fill("75");
+      assert.equal(await rewriteBatchSize.inputValue(), "75");
+      await deployBatchSize.fill("");
+      assert.equal(await deployBatchSize.inputValue(), "");
+      await deployBatchSize.fill("125");
+      assert.equal(await deployBatchSize.inputValue(), "125");
       await toggle.uncheck();
       await legacyWarning.waitFor();
+      assert.equal(await renderBatchSize.count(), 0);
+      assert.equal(await rewriteBatchSize.count(), 0);
+      assert.equal(await deployBatchSize.count(), 0);
+      assert.equal(await processingConcurrency.count(), 1);
       await processingConcurrency.fill("");
       assert.equal(await processingConcurrency.inputValue(), "");
       await processingConcurrency.fill("8");
@@ -560,9 +611,10 @@ try {
         assert.equal(saved.remoteWorkers[phase].concurrency, 8);
       }
       assert.equal(saved.remoteWorkers.render.maxAttempts, 4);
-      assert.equal(saved.remoteWorkers.rewrite.batchSize, 37);
+      assert.equal(saved.remoteWorkers.render.batchSize, 10);
+      assert.equal(saved.remoteWorkers.rewrite.batchSize, 75);
       assert.equal(saved.remoteWorkers.rewrite.maxAttempts, 3);
-      assert.equal(saved.remoteWorkers.deploy.batchSize, 73);
+      assert.equal(saved.remoteWorkers.deploy.batchSize, 125);
       assert.equal(saved.remoteWorkers.deploy.maxAttempts, 5);
       assert.deepEqual(errors, []);
     } finally {

@@ -283,6 +283,7 @@ type PublisherConfig = {
     render: {
       enabled: boolean;
       concurrency: number;
+      batchSize: number;
       maxAttempts: number;
     };
     rewrite: {
@@ -435,7 +436,11 @@ type LoadStateOptions = {
 };
 
 type AdminTab =
-  "jobs" | "configuration" | "audit" | "scheduler" | "extraTargets";
+  | "jobs"
+  | "configuration"
+  | "audit"
+  | "scheduler"
+  | "extraTargets";
 
 type AuditArtifact = {
   id: string;
@@ -512,6 +517,7 @@ const DEFAULT_CONFIG: PublisherConfig = {
     render: {
       enabled: false,
       concurrency: 4,
+      batchSize: 5,
       maxAttempts: 2,
     },
     rewrite: {
@@ -715,9 +721,7 @@ function normalizePublisherConfig(config: PublisherConfig): PublisherConfig {
   );
   const legacyRewriteConcurrency = Math.max(
     1,
-    Number(
-      config.rewriteConcurrency || legacyAssetDownloadConcurrency,
-    ),
+    Number(config.rewriteConcurrency || legacyAssetDownloadConcurrency),
   );
   const hasUnifiedConcurrency =
     Number.isFinite(Number(config.processingConcurrency)) &&
@@ -728,8 +732,7 @@ function normalizePublisherConfig(config: PublisherConfig): PublisherConfig {
   const concurrency = processingConcurrency ?? legacyConcurrency;
   const assetDownloadConcurrency =
     processingConcurrency ?? legacyAssetDownloadConcurrency;
-  const rewriteConcurrency =
-    processingConcurrency ?? legacyRewriteConcurrency;
+  const rewriteConcurrency = processingConcurrency ?? legacyRewriteConcurrency;
   const hasUnifiedDelegation =
     typeof config.lambdaDelegationEnabled === "boolean";
   const lambdaDelegationEnabled = hasUnifiedDelegation
@@ -740,14 +743,16 @@ function normalizePublisherConfig(config: PublisherConfig): PublisherConfig {
     100,
     Math.max(
       1,
-      Number(
-        processingConcurrency ?? remoteRender?.concurrency ?? concurrency,
-      ),
+      Number(processingConcurrency ?? remoteRender?.concurrency ?? concurrency),
     ),
   );
   const remoteRenderMaxAttempts = Math.min(
     5,
     Math.max(1, Number(remoteRender?.maxAttempts || 2)),
+  );
+  const remoteRenderBatchSize = Math.min(
+    20,
+    Math.max(1, Number(remoteRender?.batchSize || 5)),
   );
   const remoteRewrite = config.remoteWorkers?.rewrite;
   const remoteDeploy = config.remoteWorkers?.deploy;
@@ -766,9 +771,7 @@ function normalizePublisherConfig(config: PublisherConfig): PublisherConfig {
       Math.max(
         1,
         Number(
-          processingConcurrency ??
-            phase?.concurrency ??
-            defaults.concurrency,
+          processingConcurrency ?? phase?.concurrency ?? defaults.concurrency,
         ),
       ),
     ),
@@ -788,14 +791,12 @@ function normalizePublisherConfig(config: PublisherConfig): PublisherConfig {
     ...(lambdaDelegationEnabled !== undefined
       ? { lambdaDelegationEnabled }
       : {}),
-    ...(processingConcurrency !== undefined
-      ? { processingConcurrency }
-      : {}),
+    ...(processingConcurrency !== undefined ? { processingConcurrency } : {}),
     remoteWorkers: {
       render: {
-        enabled:
-          lambdaDelegationEnabled ?? (remoteRender?.enabled === true),
+        enabled: lambdaDelegationEnabled ?? remoteRender?.enabled === true,
         concurrency: remoteRenderConcurrency,
+        batchSize: remoteRenderBatchSize,
         maxAttempts: remoteRenderMaxAttempts,
       },
       rewrite: normalizeRemotePhase(remoteRewrite, {
@@ -1475,8 +1476,8 @@ function buildStableCurrentProgress(
     const attempted = isStaging
       ? staged
       : isDeleting
-        ? (index ?? deleted)
-        : (index ?? uploaded + skipped + failed);
+      ? index ?? deleted
+      : index ?? uploaded + skipped + failed;
     const percent =
       typeof attempted === "number" && typeof total === "number" && total > 0
         ? Math.min(100, Math.max(0, (attempted / total) * 100))
@@ -1487,16 +1488,16 @@ function buildStableCurrentProgress(
     const progressLabel = isStaging
       ? "Deploy staging"
       : isRemoteCopy
-        ? "Target deployment"
-        : isDeleting
-          ? "Target cleanup"
-          : "Deploy progress";
+      ? "Target deployment"
+      : isDeleting
+      ? "Target cleanup"
+      : "Deploy progress";
     const message =
       typeof attempted === "number" && typeof total === "number"
         ? `${progressLabel}: ${attempted}/${total} (${percent?.toFixed(1)}%)`
         : typeof elapsedSec === "number"
-          ? `Deploy in progress (${elapsedSec}s)`
-          : "Deploy in progress";
+        ? `Deploy in progress (${elapsedSec}s)`
+        : "Deploy in progress";
 
     const detailParts: string[] = [];
     if (isStaging && typeof staged === "number") {
@@ -1547,20 +1548,20 @@ function buildStableCurrentProgress(
     const summary = isStaging
       ? ""
       : isDeleting && typeof attempted === "number" && typeof total === "number"
-        ? `Deleted ${attempted}/${total} obsolete target file(s).`
-        : isRemoteCopy &&
-            typeof attempted === "number" &&
-            typeof total === "number"
-          ? `Received ${attempted}/${total} Lambda result(s): copied ${uploaded}, skipped ${skipped}, failed ${failed}.`
-          : typeof uploaded === "number" && typeof failed === "number"
-            ? `Uploaded ${uploaded} file(s), failed ${failed}.${
-                crawlDuration || deployDuration || invalidateDuration
-                  ? ` Step durations - crawl: ${crawlDuration || "-"}, deploy: ${
-                      deployDuration || "-"
-                    }, invalidate: ${invalidateDuration || "-"}.`
-                  : ""
-              }`
-            : "";
+      ? `Deleted ${attempted}/${total} obsolete target file(s).`
+      : isRemoteCopy &&
+        typeof attempted === "number" &&
+        typeof total === "number"
+      ? `Received ${attempted}/${total} Lambda result(s): copied ${uploaded}, skipped ${skipped}, failed ${failed}.`
+      : typeof uploaded === "number" && typeof failed === "number"
+      ? `Uploaded ${uploaded} file(s), failed ${failed}.${
+          crawlDuration || deployDuration || invalidateDuration
+            ? ` Step durations - crawl: ${crawlDuration || "-"}, deploy: ${
+                deployDuration || "-"
+              }, invalidate: ${invalidateDuration || "-"}.`
+            : ""
+        }`
+      : "";
 
     return {
       message,
@@ -1919,6 +1920,18 @@ export default function Main({ store }: MainProps) {
     string | number
   >(config.processingConcurrency ?? config.concurrency);
   const processingConcurrencyEditingRef = useRef(false);
+  const [renderBatchSizeDraft, setRenderBatchSizeDraft] = useState<
+    string | number
+  >(config.remoteWorkers.render.batchSize);
+  const renderBatchSizeEditingRef = useRef(false);
+  const [rewriteBatchSizeDraft, setRewriteBatchSizeDraft] = useState<
+    string | number
+  >(config.remoteWorkers.rewrite.batchSize);
+  const rewriteBatchSizeEditingRef = useRef(false);
+  const [deployBatchSizeDraft, setDeployBatchSizeDraft] = useState<
+    string | number
+  >(config.remoteWorkers.deploy.batchSize);
+  const deployBatchSizeEditingRef = useRef(false);
   const [state, setState] = useState<StateResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -2810,7 +2823,7 @@ export default function Main({ store }: MainProps) {
         currentSelectedLog &&
         normalizedState.availableLogs.includes(currentSelectedLog)
           ? currentSelectedLog
-          : (normalizedState.availableLogs[0] ?? "");
+          : normalizedState.availableLogs[0] ?? "";
 
       if (nextSelectedLog !== currentSelectedLog) {
         selectedLogRef.current = nextSelectedLog;
@@ -2870,6 +2883,24 @@ export default function Main({ store }: MainProps) {
       );
     }
   }, [config.concurrency, config.processingConcurrency]);
+
+  useEffect(() => {
+    if (!renderBatchSizeEditingRef.current) {
+      setRenderBatchSizeDraft(config.remoteWorkers.render.batchSize);
+    }
+  }, [config.remoteWorkers.render.batchSize]);
+
+  useEffect(() => {
+    if (!rewriteBatchSizeEditingRef.current) {
+      setRewriteBatchSizeDraft(config.remoteWorkers.rewrite.batchSize);
+    }
+  }, [config.remoteWorkers.rewrite.batchSize]);
+
+  useEffect(() => {
+    if (!deployBatchSizeEditingRef.current) {
+      setDeployBatchSizeDraft(config.remoteWorkers.deploy.batchSize);
+    }
+  }, [config.remoteWorkers.deploy.batchSize]);
 
   useEffect(() => {
     if (!autoRefresh) return;
@@ -2994,10 +3025,10 @@ export default function Main({ store }: MainProps) {
     currentRunStatus === "running"
       ? "blue"
       : currentRunStatus === "failed"
-        ? "red"
-        : currentRunStatus === "success"
-          ? "green"
-          : "gray";
+      ? "red"
+      : currentRunStatus === "success"
+      ? "green"
+      : "gray";
   const hasAnyLogs = (state?.availableLogs?.length ?? 0) > 0;
   const waitingForQueuedLogs =
     !hasAnyLogs &&
@@ -3981,31 +4012,7 @@ export default function Main({ store }: MainProps) {
                             )}
                           </Alert>
                         )}
-                        <SimpleGrid cols={{ base: 1, sm: 2 }}>
-                          <Switch
-                            label={infoLabel(
-                              __(
-                                "Delegate processing to Lambda",
-                                TEXT_DOMAIN,
-                              ),
-                              "lambda-delegation-enabled",
-                            )}
-                            description={__(
-                              "Delegates page rendering, asset retrieval and discovery, final text rewrite, and S3 deployment to Lambda. Export bodies stay in the S3 workspace; the coordinator keeps URL queues, policy decisions, compact manifests, retries, and logs. Enabled phases never fall back silently to local execution.",
-                              TEXT_DOMAIN,
-                            )}
-                            checked={lambdaDelegationEnabled}
-                            onChange={(event) =>
-                              setConfig((prev) =>
-                                synchronizedLambdaDelegation(
-                                  prev,
-                                  event.currentTarget.checked,
-                                ),
-                              )
-                            }
-                            size="sm"
-                            styles={switchControlStyles()}
-                          />
+                        <SimpleGrid cols={1}>
                           <NumberInput
                             label={infoLabel(
                               __("Processing concurrency", TEXT_DOMAIN),
@@ -4076,8 +4083,113 @@ export default function Main({ store }: MainProps) {
                               );
                             }}
                           />
+                          <Switch
+                            label={infoLabel(
+                              __("Delegate processing to Lambda", TEXT_DOMAIN),
+                              "lambda-delegation-enabled",
+                            )}
+                            description={__(
+                              "Delegates page rendering, asset retrieval and discovery, final text rewrite, and S3 deployment to Lambda. Export bodies stay in the S3 workspace; the coordinator keeps URL queues, policy decisions, compact manifests, retries, and logs. Enabled phases never fall back silently to local execution.",
+                              TEXT_DOMAIN,
+                            )}
+                            checked={lambdaDelegationEnabled}
+                            onChange={(event) =>
+                              setConfig((prev) =>
+                                synchronizedLambdaDelegation(
+                                  prev,
+                                  event.currentTarget.checked,
+                                ),
+                              )
+                            }
+                            size="sm"
+                            styles={switchControlStyles()}
+                          />
                         </SimpleGrid>
-                        <SimpleGrid cols={{ base: 1, sm: 2 }}>
+                        <SimpleGrid
+                          cols={{
+                            base: 1,
+                            sm: lambdaDelegationEnabled ? 2 : 1,
+                          }}
+                        >
+                          {lambdaDelegationEnabled && (
+                            <NumberInput
+                              label={infoLabel(
+                                __("Render batch size", TEXT_DOMAIN),
+                                "render-batch-size",
+                              )}
+                              description={__(
+                                "Pages rendered sequentially by one Lambda invocation. Larger batches reuse Chromium and reduce invocation overhead without increasing simultaneous load on the WordPress origin.",
+                                TEXT_DOMAIN,
+                              )}
+                              min={1}
+                              max={20}
+                              step={1}
+                              role="spinbutton"
+                              aria-valuemin={1}
+                              aria-valuemax={20}
+                              aria-valuenow={
+                                typeof renderBatchSizeDraft === "number"
+                                  ? renderBatchSizeDraft
+                                  : undefined
+                              }
+                              allowDecimal={false}
+                              allowNegative={false}
+                              clampBehavior="none"
+                              value={renderBatchSizeDraft}
+                              styles={{
+                                root: {
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  height: "100%",
+                                },
+                                wrapper: {
+                                  marginTop: "auto",
+                                  paddingTop: "var(--mantine-spacing-xs)",
+                                },
+                              }}
+                              onFocus={() => {
+                                renderBatchSizeEditingRef.current = true;
+                              }}
+                              onChange={(value) => {
+                                setRenderBatchSizeDraft(value);
+                                if (
+                                  typeof value === "number" &&
+                                  Number.isFinite(value) &&
+                                  value >= 1 &&
+                                  value <= 20
+                                ) {
+                                  setConfig((prev) => ({
+                                    ...prev,
+                                    remoteWorkers: {
+                                      ...prev.remoteWorkers,
+                                      render: {
+                                        ...prev.remoteWorkers.render,
+                                        batchSize: value,
+                                      },
+                                    },
+                                  }));
+                                }
+                              }}
+                              onBlur={() => {
+                                renderBatchSizeEditingRef.current = false;
+                                const requested = Number(renderBatchSizeDraft);
+                                const normalized = Number.isFinite(requested)
+                                  ? Math.min(20, Math.max(1, requested))
+                                  : config.remoteWorkers.render.batchSize;
+                                setRenderBatchSizeDraft(normalized);
+                                setConfig((prev) => ({
+                                  ...prev,
+                                  remoteWorkers: {
+                                    ...prev.remoteWorkers,
+                                    render: {
+                                      ...prev.remoteWorkers.render,
+                                      batchSize: normalized,
+                                    },
+                                  },
+                                }));
+                              }}
+                            />
+                          )}
                           <TextInput
                             label={infoLabel(
                               __("Max pages (0 = unlimited)", TEXT_DOMAIN),
@@ -4089,6 +4201,17 @@ export default function Main({ store }: MainProps) {
                             )}
                             type="number"
                             value={String(config.maxPages)}
+                            styles={{
+                              root: {
+                                display: "flex",
+                                flexDirection: "column",
+                                height: "100%",
+                              },
+                              wrapper: {
+                                marginTop: "auto",
+                                paddingTop: "var(--mantine-spacing-xs)",
+                              },
+                            }}
                             onChange={(event) =>
                               setConfig((prev) => ({
                                 ...prev,
@@ -4099,6 +4222,150 @@ export default function Main({ store }: MainProps) {
                             }
                           />
                         </SimpleGrid>
+                        {lambdaDelegationEnabled && (
+                          <SimpleGrid cols={{ base: 1, sm: 2 }}>
+                            <NumberInput
+                              label={infoLabel(
+                                __("Rewrite batch size", TEXT_DOMAIN),
+                                "rewrite-batch-size",
+                              )}
+                              description={__(
+                                "Text objects rewritten sequentially by one Lambda invocation. Progress is reported after each completed batch.",
+                                TEXT_DOMAIN,
+                              )}
+                              min={1}
+                              max={500}
+                              step={1}
+                              role="spinbutton"
+                              allowDecimal={false}
+                              allowNegative={false}
+                              clampBehavior="none"
+                              value={rewriteBatchSizeDraft}
+                              styles={{
+                                root: {
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  height: "100%",
+                                },
+                                wrapper: {
+                                  marginTop: "auto",
+                                  paddingTop: "var(--mantine-spacing-xs)",
+                                },
+                              }}
+                              onFocus={() => {
+                                rewriteBatchSizeEditingRef.current = true;
+                              }}
+                              onChange={(value) => {
+                                setRewriteBatchSizeDraft(value);
+                                if (
+                                  typeof value === "number" &&
+                                  Number.isFinite(value) &&
+                                  value >= 1 &&
+                                  value <= 500
+                                ) {
+                                  setConfig((prev) => ({
+                                    ...prev,
+                                    remoteWorkers: {
+                                      ...prev.remoteWorkers,
+                                      rewrite: {
+                                        ...prev.remoteWorkers.rewrite,
+                                        batchSize: value,
+                                      },
+                                    },
+                                  }));
+                                }
+                              }}
+                              onBlur={() => {
+                                rewriteBatchSizeEditingRef.current = false;
+                                const requested = Number(rewriteBatchSizeDraft);
+                                const normalized = Number.isFinite(requested)
+                                  ? Math.min(500, Math.max(1, requested))
+                                  : config.remoteWorkers.rewrite.batchSize;
+                                setRewriteBatchSizeDraft(normalized);
+                                setConfig((prev) => ({
+                                  ...prev,
+                                  remoteWorkers: {
+                                    ...prev.remoteWorkers,
+                                    rewrite: {
+                                      ...prev.remoteWorkers.rewrite,
+                                      batchSize: normalized,
+                                    },
+                                  },
+                                }));
+                              }}
+                            />
+                            <NumberInput
+                              label={infoLabel(
+                                __("Deploy batch size", TEXT_DOMAIN),
+                                "deploy-batch-size",
+                              )}
+                              description={__(
+                                "S3 objects checked or copied sequentially by one Lambda invocation. Progress is reported after each completed batch.",
+                                TEXT_DOMAIN,
+                              )}
+                              min={1}
+                              max={500}
+                              step={1}
+                              role="spinbutton"
+                              allowDecimal={false}
+                              allowNegative={false}
+                              clampBehavior="none"
+                              value={deployBatchSizeDraft}
+                              styles={{
+                                root: {
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  height: "100%",
+                                },
+                                wrapper: {
+                                  marginTop: "auto",
+                                  paddingTop: "var(--mantine-spacing-xs)",
+                                },
+                              }}
+                              onFocus={() => {
+                                deployBatchSizeEditingRef.current = true;
+                              }}
+                              onChange={(value) => {
+                                setDeployBatchSizeDraft(value);
+                                if (
+                                  typeof value === "number" &&
+                                  Number.isFinite(value) &&
+                                  value >= 1 &&
+                                  value <= 500
+                                ) {
+                                  setConfig((prev) => ({
+                                    ...prev,
+                                    remoteWorkers: {
+                                      ...prev.remoteWorkers,
+                                      deploy: {
+                                        ...prev.remoteWorkers.deploy,
+                                        batchSize: value,
+                                      },
+                                    },
+                                  }));
+                                }
+                              }}
+                              onBlur={() => {
+                                deployBatchSizeEditingRef.current = false;
+                                const requested = Number(deployBatchSizeDraft);
+                                const normalized = Number.isFinite(requested)
+                                  ? Math.min(500, Math.max(1, requested))
+                                  : config.remoteWorkers.deploy.batchSize;
+                                setDeployBatchSizeDraft(normalized);
+                                setConfig((prev) => ({
+                                  ...prev,
+                                  remoteWorkers: {
+                                    ...prev.remoteWorkers,
+                                    deploy: {
+                                      ...prev.remoteWorkers.deploy,
+                                      batchSize: normalized,
+                                    },
+                                  },
+                                }));
+                              }}
+                            />
+                          </SimpleGrid>
+                        )}
                       </Stack>
                     </Card>
                   )}
@@ -4861,14 +5128,14 @@ export default function Main({ store }: MainProps) {
                                       TEXT_DOMAIN,
                                     )
                                   : hasIncrementalAccess
-                                    ? __(
-                                        "Incremental skips unchanged pages when possible.",
-                                        TEXT_DOMAIN,
-                                      )
-                                    : __(
-                                        "Incremental requests stay selectable, but without an active WPSuite subscription the exporter will fall back to a full crawl.",
-                                        TEXT_DOMAIN,
-                                      )
+                                  ? __(
+                                      "Incremental skips unchanged pages when possible.",
+                                      TEXT_DOMAIN,
+                                    )
+                                  : __(
+                                      "Incremental requests stay selectable, but without an active WPSuite subscription the exporter will fall back to a full crawl.",
+                                      TEXT_DOMAIN,
+                                    )
                               }
                               onChange={(value) =>
                                 setCrawlMode(
@@ -4906,14 +5173,14 @@ export default function Main({ store }: MainProps) {
                                       TEXT_DOMAIN,
                                     )
                                   : deploymentProfileNames.length === 0
-                                    ? __(
-                                        "Base target will be used. Add extra targets under PRO Features > Extra Deployment Targets if needed.",
-                                        TEXT_DOMAIN,
-                                      )
-                                    : __(
-                                        "Optional. Leave empty to use the base target.",
-                                        TEXT_DOMAIN,
-                                      )
+                                  ? __(
+                                      "Base target will be used. Add extra targets under PRO Features > Extra Deployment Targets if needed.",
+                                      TEXT_DOMAIN,
+                                    )
+                                  : __(
+                                      "Optional. Leave empty to use the base target.",
+                                      TEXT_DOMAIN,
+                                    )
                               }
                               onChange={(value) =>
                                 setDeploymentProfile(
@@ -4939,14 +5206,14 @@ export default function Main({ store }: MainProps) {
                                       TEXT_DOMAIN,
                                     )
                                   : contentSyncRuleOptions.length === 0
-                                    ? __(
-                                        "No enabled content-sync rule uses this target.",
-                                        TEXT_DOMAIN,
-                                      )
-                                    : __(
-                                        "Required. Select the exact scheduler rule to run.",
-                                        TEXT_DOMAIN,
-                                      )
+                                  ? __(
+                                      "No enabled content-sync rule uses this target.",
+                                      TEXT_DOMAIN,
+                                    )
+                                  : __(
+                                      "Required. Select the exact scheduler rule to run.",
+                                      TEXT_DOMAIN,
+                                    )
                               }
                               placeholder={__("Select a rule", TEXT_DOMAIN)}
                               onChange={(value) =>
@@ -5774,8 +6041,8 @@ export default function Main({ store }: MainProps) {
                                 queueRunnerStatus === "error"
                                   ? "red"
                                   : queueRunnerStatus
-                                    ? "blue"
-                                    : "gray"
+                                  ? "blue"
+                                  : "gray"
                               }
                               variant="light"
                             >
@@ -6525,17 +6792,16 @@ export default function Main({ store }: MainProps) {
                                         entry.status === "failed"
                                           ? "red"
                                           : entry.status === "success"
-                                            ? "green"
-                                            : entry.status === "stopped"
-                                              ? "yellow"
-                                              : entry.status === "running"
-                                                ? "blue"
-                                                : entry.status === "queued"
-                                                  ? "gray"
-                                                  : entry.status ===
-                                                      "retry-wait"
-                                                    ? "orange"
-                                                    : "dark"
+                                          ? "green"
+                                          : entry.status === "stopped"
+                                          ? "yellow"
+                                          : entry.status === "running"
+                                          ? "blue"
+                                          : entry.status === "queued"
+                                          ? "gray"
+                                          : entry.status === "retry-wait"
+                                          ? "orange"
+                                          : "dark"
                                       }
                                       variant="light"
                                     >
@@ -6833,8 +7099,8 @@ export default function Main({ store }: MainProps) {
                   !contentSyncMultisite
                     ? "This WordPress installation is not currently a multisite network."
                     : !contentSyncNetworkActive
-                      ? "Network-activate SmartCloud Static Publisher before enabling full-network tracking."
-                      : "Track matching post types across the full WordPress network. Changing this scope requires a new successful normal publish baseline.",
+                    ? "Network-activate SmartCloud Static Publisher before enabling full-network tracking."
+                    : "Track matching post types across the full WordPress network. Changing this scope requires a new successful normal publish baseline.",
                   TEXT_DOMAIN,
                 )}
                 checked={schedulerRuleDraft.includeSubsites === true}

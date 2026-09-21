@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.23
+Stable tag: 1.0.24
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -288,7 +288,7 @@ No. SDK deploy now skips unchanged files using S3 ETag + size fast checks, with 
 
 With full delegation, rendered HTML and downloaded assets remain in the worker S3 workspace for Lambda rewrite and direct S3-to-S3 deployment; the coordinator does not download them for a second HTML scan or restage the completed export. It still owns the dynamic URL queues, safety and incremental decisions, compact manifests, retries, logs, invalidation, and terminal job state. The setting is not an account-wide Lambda concurrency limit: function reserved concurrency, regional quotas, other sites, available batches, and downstream capacity can reduce effective parallelism.
 
-Existing installations that saved different legacy settings for individual phases keep those values until an administrator changes the corresponding common control. The Configuration screen shows a warning for that mixed legacy state. Lambda batch sizes and retry counts remain internal compatibility settings and are not normal UI controls.
+Existing installations that saved different legacy settings for individual phases keep those values until an administrator changes the corresponding common control. The Configuration screen shows a warning for that mixed legacy state. Render, rewrite, and deploy batch sizes are configurable independently. A render batch reuses one Chromium process for up to 20 sequential pages; rewrite and deploy support larger bounded batches because they do not load WordPress. Runtime progress advances after each completed batch. Asset downloads use protocol-bounded batches of 20 URLs. Retry counts remain internal compatibility settings.
 
 = How should I use blocked query fragments? =
 Use `blockedSearchFragments` for preview or editor query patterns that must never enter the crawl queue. The setting is empty by default. If your WordPress setup exposes plugin-specific preview URLs, add those fragments explicitly to your config. Typical examples include page-builder previews, WordPress Customizer preview parameters, multilingual editor preview flags, and similar per-plugin markers. This matters because exported page output paths ignore query strings, so a preview URL can overwrite the canonical output for the same page path.
@@ -508,6 +508,14 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.0.24 =
+* Lambda rendering: Group pages into configurable batches so one warm Chromium process can render several URLs sequentially while preserving bounded Lambda fan-out and retrying only failed URLs.
+* Processing controls: Put general concurrency first, show Lambda batch controls only while delegation is enabled, align paired inputs, and retain stepper-friendly editable blank states.
+* Lambda progress: Read conditionally ordered DynamoDB worker heartbeats while long render, asset, rewrite, or deploy batches are still running.
+* Output metadata: Prefer the origin response Content-Type, fall back to the file extension only when needed, preserve it through Lambda rewrite, and repair mismatched target metadata during deploy.
+* Saved-page progress: Count successful S3 workspace saves and validated reused/checkpoint outputs once per output path, without counting failed requests or unrelated skips as saved pages.
+* Dependencies: Use @smart-cloud/publisher-exporter 1.1.72 on every coordinator queue runner for corrected saved-page accounting. Tested Lambda workers running 1.1.71 may remain unchanged: their remote-worker bundle is byte-identical to 1.1.72. Live intra-batch progress still requires the updated worker stack/config.
+
 = 1.0.23 =
 * Processing controls: Replace separate local and Lambda phase controls with one Processing concurrency field and one Delegate processing to Lambda switch, while preserving mixed legacy settings until an administrator explicitly changes the common controls.
 * Lambda data plane: Keep rendered HTML and fetched assets in the S3 workspace, discover their dependent URLs in workers, rewrite workspace objects in place, and deploy them S3-to-S3 without downloading and restaging the export through the coordinator.
@@ -628,6 +636,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.24 =
+After active jobs finish, install @smart-cloud/publisher-exporter 1.1.72 and restart every external coordinator queue runner. The saved-page counter fix applies to new jobs; it does not rewrite an active job's progress. Existing tested Lambda workers on 1.1.71 can remain in place because the 1.1.72 remote-worker bundle is byte-identical; no stack update or remote-workers.json replacement is needed solely for this counter fix. If upgrading older worker infrastructure, deploy workers with the 1.1.71 Chromium launch fix and install the regenerated remote-workers.json to enable direct DynamoDB intra-batch progress; older configs expose progress only after a batch completes. Render batching defaults to 5 URLs; review render, rewrite, and deploy batch sizes before increasing them. Republish targets produced by the earlier delegated rewrite implementation to replace incorrect S3 Content-Type metadata.
 
 = 1.0.23 =
 Install @smart-cloud/publisher-exporter 1.1.65 and restart the external queue runner. Before enabling Lambda delegation, deploy the updated worker stack and install its new remote-workers.json containing functions.asset. Existing mixed local/remote settings remain unchanged until an administrator explicitly saves the unified delegation and concurrency controls.
