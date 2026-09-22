@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.0.24
+ * Version:           1.0.25
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.0.24';
+const VERSION = '1.0.25';
 
 final class Plugin
 {
@@ -43,6 +43,7 @@ final class Plugin
     private const OPTION_AUDIT_CURSOR_KEY = 'smartcloud_static_publisher_audit_cursor';
     private const OPTION_AUDIT_MUTATION_LOCK_KEY = 'smartcloud_static_publisher_audit_mutation_lock';
     private const OPTION_RUNTIME_NONCE_KEY = 'smartcloud_static_publisher_runtime_nonce';
+    private const OPTION_CHANGE_TOKEN_REVISION_KEY = 'smartcloud_static_publisher_change_token_revision';
     private const OPTION_QUEUE_MUTATION_LOCK_KEY = 'smartcloud_static_publisher_queue_mutation_lock';
     private const REST_NAMESPACE = 'smartcloud-static-publisher/v1';
     private const CHANGE_TOKEN_AUTH_HEADER = 'x-static-publisher-token';
@@ -51,6 +52,8 @@ final class Plugin
     private ?Admin $admin = null;
     private ?ContentChangeJournal $contentChangeJournal = null;
     private ?JobAbilities $jobAbilities = null;
+    private bool $changeTokenRevisionBumpedThisRequest = false;
+    private bool $changeTokenRevisionBumpInProgress = false;
 
     public static function instance(): Plugin
     {
@@ -61,6 +64,7 @@ final class Plugin
     {
         $this->defineConstants();
         $this->includes();
+        $this->registerConfiguredChangeTokenHooks();
 
         if ($this->admin instanceof Admin) {
             $this->admin->registerHooks();
@@ -144,6 +148,11 @@ final class Plugin
             'methods' => 'POST',
             'permission_callback' => array($this, 'canReadChangeTokens'),
             'callback' => array($this, 'handleGetChangeTokens'),
+        ));
+        register_rest_route(self::REST_NAMESPACE, '/page-cache/purge', array(
+            'methods' => 'POST',
+            'permission_callback' => array($this, 'canReadChangeTokens'),
+            'callback' => array($this, 'handlePurgePageCache'),
         ));
         if ($this->contentChangeJournal instanceof ContentChangeJournal) {
             $this->contentChangeJournal->registerRestRoutes();
@@ -237,6 +246,49 @@ final class Plugin
         ), 200);
     }
 
+    public function handlePurgePageCache(\WP_REST_Request $request): \WP_REST_Response
+    {
+        $payload = $request->get_json_params();
+        $data = is_array($payload) ? $payload : array();
+        $requestedScope = sanitize_key((string) ($data['scope'] ?? 'all'));
+        if ($requestedScope !== 'all') {
+            return new \WP_REST_Response(array(
+                'purged' => false,
+                'message' => __('Only a complete page-cache purge is currently supported.', 'smartcloud-static-publisher'),
+            ), 400);
+        }
+
+        $result = apply_filters(
+            'smartcloud_static_publisher_purge_page_cache_v1',
+            null,
+            array(
+                'scope' => 'all',
+                'source' => 'exporter',
+                'requestedAt' => gmdate('c'),
+            )
+        );
+
+        if (is_wp_error($result)) {
+            return new \WP_REST_Response(array(
+                'purged' => false,
+                'message' => sanitize_text_field($result->get_error_message()),
+            ), 500);
+        }
+        if (!is_array($result) || empty($result['purged'])) {
+            return new \WP_REST_Response(array(
+                'purged' => false,
+                'message' => __('No page-cache purge provider confirmed a complete purge.', 'smartcloud-static-publisher'),
+            ), 409);
+        }
+
+        return new \WP_REST_Response(array(
+            'purged' => true,
+            'provider' => sanitize_text_field((string) ($result['provider'] ?? 'custom')),
+            'scope' => 'all',
+            'purgedAt' => gmdate('c'),
+        ), 200);
+    }
+
     public function getConfig(): array
     {
         $stored = get_option(self::OPTION_KEY);
@@ -244,6 +296,58 @@ final class Plugin
             $stored = array();
         }
         return $this->sanitizeConfig($stored);
+    }
+
+    private function registerConfiguredChangeTokenHooks(): void
+    {
+        $config = $this->getConfig();
+        $hooks = $config['changeTokenDependencies']['actionHooks'] ?? array();
+        foreach (is_array($hooks) ? $hooks : array() as $hook) {
+            add_action((string) $hook, array($this, 'handleWatchedChangeTokenAction'), PHP_INT_MAX, 0);
+        }
+    }
+
+    public function handleWatchedChangeTokenAction(): void
+    {
+        if ($this->changeTokenRevisionBumpedThisRequest || $this->changeTokenRevisionBumpInProgress) {
+            return;
+        }
+        $this->bumpChangeTokenRevision('action:' . current_filter());
+    }
+
+    public function bumpChangeTokenRevision(string $reason = 'manual'): array
+    {
+        if ($this->changeTokenRevisionBumpInProgress) {
+            return $this->getChangeTokenRevision();
+        }
+
+        $this->changeTokenRevisionBumpInProgress = true;
+        try {
+            $current = $this->getChangeTokenRevision();
+            $next = array(
+                'revision' => max(0, (int) ($current['revision'] ?? 0)) + 1,
+                'updatedAt' => gmdate('c'),
+                'reason' => sanitize_text_field($reason),
+            );
+            update_option(self::OPTION_CHANGE_TOKEN_REVISION_KEY, $next, false);
+            $this->changeTokenRevisionBumpedThisRequest = true;
+            return $next;
+        } finally {
+            $this->changeTokenRevisionBumpInProgress = false;
+        }
+    }
+
+    public function getChangeTokenRevision(): array
+    {
+        $stored = get_option(self::OPTION_CHANGE_TOKEN_REVISION_KEY, array());
+        if (!is_array($stored)) {
+            $stored = array();
+        }
+        return array(
+            'revision' => max(0, (int) ($stored['revision'] ?? 0)),
+            'updatedAt' => sanitize_text_field((string) ($stored['updatedAt'] ?? '')),
+            'reason' => sanitize_text_field((string) ($stored['reason'] ?? '')),
+        );
     }
 
     public function getResolvedConfig(?array $localConfig = null): array
@@ -320,6 +424,19 @@ final class Plugin
             'assetPathPrefixes' => $this->sanitizePathList($input['assetPathPrefixes'] ?? array('/wp-content/', '/wp-includes/')),
             'blockedPathPrefixes' => $this->sanitizePathList($input['blockedPathPrefixes'] ?? array('/wp-admin', '/wp-login.php', '/wp-json')),
             'blockedSearchFragments' => $this->sanitizeStringList($input['blockedSearchFragments'] ?? array()),
+            'changeTokenDependencies' => array(
+                'optionNames' => $this->sanitizeChangeTokenDependencyNames(
+                    $input['changeTokenDependencies']['optionNames'] ?? array(),
+                    false
+                ),
+                'actionHooks' => $this->sanitizeChangeTokenDependencyNames(
+                    $input['changeTokenDependencies']['actionHooks'] ?? array(),
+                    true
+                ),
+            ),
+            'pageCache' => array(
+                'purgeBeforeCrawl' => !empty($input['pageCache']['purgeBeforeCrawl']),
+            ),
             'extraReplacements' => $this->sanitizeMap($input['extraReplacements'] ?? array()),
             'postCrawlCopyMap' => $this->sanitizeMap($input['postCrawlCopyMap'] ?? array()),
             'logDir' => $this->normalizeStorageRelativePath((string) ($input['logDir'] ?? 'logs'), 'logs'),
@@ -1167,6 +1284,43 @@ final class Plugin
         return array_values(array_unique($out));
     }
 
+    private function sanitizeChangeTokenDependencyNames($value, bool $isHook): array
+    {
+        if (!is_array($value)) {
+            return array();
+        }
+
+        $blockedHooks = array(
+            'init',
+            'wp',
+            'template_redirect',
+            'shutdown',
+            'plugins_loaded',
+            'rest_api_init',
+            'admin_init',
+            'updated_option',
+            'added_option',
+            'deleted_option',
+        );
+        $out = array();
+        foreach ($value as $entry) {
+            $name = trim((string) $entry);
+            if (!preg_match('/^[A-Za-z0-9_.:\/-]{1,191}$/D', $name)) {
+                continue;
+            }
+            if ($isHook && in_array($name, $blockedHooks, true)) {
+                continue;
+            }
+            $out[$name] = true;
+            if (count($out) >= 50) {
+                break;
+            }
+        }
+        $names = array_keys($out);
+        sort($names, SORT_STRING);
+        return $names;
+    }
+
     private function sanitizePathList($value): array
     {
         return $this->sanitizeStringList($value);
@@ -1246,6 +1400,7 @@ final class Plugin
         unset($stripped['defaultDeploymentProfile']);
         unset($stripped['deploymentProfiles']);
         unset($stripped['wpsuite']);
+        unset($stripped['changeTokenDependencies']);
         return $stripped;
     }
 
@@ -4317,6 +4472,25 @@ final class Plugin
         $themeStylesheetSignature = isset($renderDependencyTargetSignatures['theme-stylesheet']) && is_array($renderDependencyTargetSignatures['theme-stylesheet'])
             ? $renderDependencyTargetSignatures['theme-stylesheet']
             : array();
+        $config = $this->getConfig();
+        $watchedOptionSignature = array();
+        $missingOption = new \stdClass();
+        foreach ((array) ($config['changeTokenDependencies']['optionNames'] ?? array()) as $optionName) {
+            $value = get_option((string) $optionName, $missingOption);
+            $watchedOptionSignature[] = array(
+                'name' => (string) $optionName,
+                'exists' => $value !== $missingOption,
+                'valueHash' => $value === $missingOption
+                    ? null
+                    : hash('sha256', maybe_serialize($value)),
+            );
+        }
+        $customSignature = apply_filters(
+            'smartcloud_static_publisher_change_token_signature_v1',
+            array(),
+            array('blogId' => get_current_blog_id())
+        );
+        $revision = $this->getChangeTokenRevision();
 
         return array(
             'stylesheet' => (string) $theme->get_stylesheet(),
@@ -4336,6 +4510,9 @@ final class Plugin
                 : '',
             'elementorLibrarySignatureHash' => sanitize_text_field((string) ($elementorLibrarySignature['hash'] ?? '')),
             'elementorLibraryCount' => absint($elementorLibrarySignature['count'] ?? 0),
+            'watchedOptionsHash' => hash('sha256', (string) wp_json_encode($watchedOptionSignature)),
+            'siteRevision' => max(0, (int) ($revision['revision'] ?? 0)),
+            'customDependencyHash' => hash('sha256', maybe_serialize($customSignature)),
         );
     }
 

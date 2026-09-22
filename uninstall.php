@@ -43,6 +43,7 @@ function smartcloud_static_publisher_uninstall_site(): void
         'smartcloud_static_publisher_audit_log',
         'smartcloud_static_publisher_audit_cursor',
         'smartcloud_static_publisher_runtime_nonce',
+        'smartcloud_static_publisher_change_token_revision',
         'smartcloud_static_publisher_queue_mutation_lock',
         'smartcloud_static_publisher_content_journal_schema',
         'smartcloud_static_publisher_content_sync_consumers',

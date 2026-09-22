@@ -265,6 +265,13 @@ type PublisherConfig = {
   assetPathPrefixes: string[];
   blockedPathPrefixes: string[];
   blockedSearchFragments: string[];
+  changeTokenDependencies: {
+    optionNames: string[];
+    actionHooks: string[];
+  };
+  pageCache: {
+    purgeBeforeCrawl: boolean;
+  };
   extraReplacements: Record<string, string>;
   postCrawlCopyMap: Record<string, string>;
   scheduler: {
@@ -499,6 +506,13 @@ const DEFAULT_CONFIG: PublisherConfig = {
   assetPathPrefixes: ["/wp-content/", "/wp-includes/", "/assets/"],
   blockedPathPrefixes: ["/wp-admin", "/wp-login.php", "/wp-json"],
   blockedSearchFragments: [],
+  changeTokenDependencies: {
+    optionNames: [],
+    actionHooks: [],
+  },
+  pageCache: {
+    purgeBeforeCrawl: false,
+  },
   extraReplacements: {},
   postCrawlCopyMap: {},
   scheduler: {
@@ -788,6 +802,17 @@ function normalizePublisherConfig(config: PublisherConfig): PublisherConfig {
     concurrency,
     assetDownloadConcurrency,
     rewriteConcurrency,
+    changeTokenDependencies: {
+      optionNames: Array.isArray(config.changeTokenDependencies?.optionNames)
+        ? config.changeTokenDependencies.optionNames.map(String)
+        : [],
+      actionHooks: Array.isArray(config.changeTokenDependencies?.actionHooks)
+        ? config.changeTokenDependencies.actionHooks.map(String)
+        : [],
+    },
+    pageCache: {
+      purgeBeforeCrawl: config.pageCache?.purgeBeforeCrawl === true,
+    },
     ...(lambdaDelegationEnabled !== undefined
       ? { lambdaDelegationEnabled }
       : {}),
@@ -1964,6 +1989,8 @@ export default function Main({ store }: MainProps) {
   const [downloadingLog, setDownloadingLog] = useState(false);
   const [clearingLogs, setClearingLogs] = useState(false);
   const [stoppingCurrentJob, setStoppingCurrentJob] = useState(false);
+  const [invalidatingChangeTokens, setInvalidatingChangeTokens] =
+    useState(false);
   const [
     clearLogsConfirmOpen,
     { open: openClearLogsConfirm, close: closeClearLogsConfirm },
@@ -1971,6 +1998,13 @@ export default function Main({ store }: MainProps) {
   const [
     stopCurrentRunConfirmOpen,
     { open: openStopCurrentRunConfirm, close: closeStopCurrentRunConfirm },
+  ] = useDisclosure(false);
+  const [
+    invalidateChangeTokensConfirmOpen,
+    {
+      open: openInvalidateChangeTokensConfirm,
+      close: closeInvalidateChangeTokensConfirm,
+    },
   ] = useDisclosure(false);
 
   const [dirBrowseOpen, { open: openDirBrowse, close: closeDirBrowse }] =
@@ -2005,6 +2039,12 @@ export default function Main({ store }: MainProps) {
   );
   const [blockedFragmentsText, setBlockedFragmentsText] = useState(
     linesText(config.blockedSearchFragments),
+  );
+  const [changeTokenOptionNamesText, setChangeTokenOptionNamesText] = useState(
+    linesText(config.changeTokenDependencies.optionNames),
+  );
+  const [changeTokenActionHooksText, setChangeTokenActionHooksText] = useState(
+    linesText(config.changeTokenDependencies.actionHooks),
   );
   const [invalidationText, setInvalidationText] = useState(
     linesText(config.cloudFront.invalidationPaths),
@@ -2597,6 +2637,12 @@ export default function Main({ store }: MainProps) {
       setAssetPrefixesText(linesText(config.assetPathPrefixes));
       setBlockedPrefixesText(linesText(config.blockedPathPrefixes));
       setBlockedFragmentsText(linesText(config.blockedSearchFragments));
+      setChangeTokenOptionNamesText(
+        linesText(config.changeTokenDependencies.optionNames),
+      );
+      setChangeTokenActionHooksText(
+        linesText(config.changeTokenDependencies.actionHooks),
+      );
       setInvalidationText(linesText(config.cloudFront.invalidationPaths));
       setExtraReplacementRows(mapToRows(config.extraReplacements));
       setPostCrawlCopyRows(mapToRows(config.postCrawlCopyMap));
@@ -3253,6 +3299,10 @@ export default function Main({ store }: MainProps) {
       assetPathPrefixes: parseLines(assetPrefixesText),
       blockedPathPrefixes: parseLines(blockedPrefixesText),
       blockedSearchFragments: parseLines(blockedFragmentsText),
+      changeTokenDependencies: {
+        optionNames: parseLines(changeTokenOptionNamesText),
+        actionHooks: parseLines(changeTokenActionHooksText),
+      },
       extraReplacements: rowsToMap(extraReplacementRows),
       postCrawlCopyMap: rowsToMap(postCrawlCopyRows),
       scheduler: {
@@ -3317,6 +3367,32 @@ export default function Main({ store }: MainProps) {
       });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const invalidateAllChangeTokens = async () => {
+    setInvalidatingChangeTokens(true);
+    try {
+      const response = await restRequest<{
+        revision: number;
+        updatedAt: string;
+        message: string;
+      }>(boot, "/change-token-revision", { method: "POST" });
+      closeInvalidateChangeTokensConfirm();
+      notifications.show({
+        title: __("Page tokens invalidated", TEXT_DOMAIN),
+        message: response.message,
+        color: "green",
+      });
+    } catch (error) {
+      notifications.show({
+        title: __("Invalidation failed", TEXT_DOMAIN),
+        message: (error as Error).message,
+        color: "red",
+        icon: <IconAlertCircle size={16} />,
+      });
+    } finally {
+      setInvalidatingChangeTokens(false);
     }
   };
 
@@ -4838,6 +4914,108 @@ export default function Main({ store }: MainProps) {
                               minRows={3}
                             />
                           </SimpleGrid>
+                        </Card>
+
+                        <Card withBorder shadow="sm" radius="md" padding="lg">
+                          <Stack gap="md">
+                            <Group justify="space-between" align="center">
+                              <Title order={3}>
+                                {__(
+                                  "Site-wide Change Tokens and Page Cache",
+                                  TEXT_DOMAIN,
+                                )}
+                              </Title>
+                              <Button
+                                variant="subtle"
+                                size="compact-sm"
+                                leftSection={<IconInfoCircle size={14} />}
+                                onClick={() =>
+                                  openInfo("site-wide-change-tokens")
+                                }
+                              >
+                                {__("Open help", TEXT_DOMAIN)}
+                              </Button>
+                            </Group>
+                            <Alert color="blue" variant="light">
+                              <Text size="sm">
+                                {__(
+                                  "Use these dependencies for site-wide output that WordPress cannot infer from posts, templates, menus, or theme files. A change invalidates every HTML page token.",
+                                  TEXT_DOMAIN,
+                                )}
+                              </Text>
+                            </Alert>
+                            <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
+                              <Textarea
+                                label={infoLabel(
+                                  __("Watched WordPress options", TEXT_DOMAIN),
+                                  "watched-wordpress-options",
+                                )}
+                                description={__(
+                                  "Exact option names, one per line. Values are hashed and never returned by the token API.",
+                                  TEXT_DOMAIN,
+                                )}
+                                placeholder="my_plugin_global_settings"
+                                value={changeTokenOptionNamesText}
+                                onChange={(event) =>
+                                  setChangeTokenOptionNamesText(
+                                    event.currentTarget.value,
+                                  )
+                                }
+                                autosize
+                                minRows={4}
+                              />
+                              <Textarea
+                                label={infoLabel(
+                                  __("Watched WordPress action hooks", TEXT_DOMAIN),
+                                  "watched-wordpress-actions",
+                                )}
+                                description={__(
+                                  "Stable save, activate, delete, or restore actions, one per line. Never add request lifecycle hooks such as init or template_redirect.",
+                                  TEXT_DOMAIN,
+                                )}
+                                placeholder="my_plugin/settings_updated"
+                                value={changeTokenActionHooksText}
+                                onChange={(event) =>
+                                  setChangeTokenActionHooksText(
+                                    event.currentTarget.value,
+                                  )
+                                }
+                                autosize
+                                minRows={4}
+                              />
+                            </SimpleGrid>
+                            <Divider />
+                            <Switch
+                              label={infoLabel(
+                                __("Purge page cache before crawl", TEXT_DOMAIN),
+                                "page-cache-purge",
+                              )}
+                              description={__(
+                                "Require a configured server adapter to confirm a complete purge before publish, crawl, retry, URL export, or a content-sync render phase. Deploy-only and invalidate-only jobs do not purge.",
+                                TEXT_DOMAIN,
+                              )}
+                              checked={config.pageCache.purgeBeforeCrawl}
+                              onChange={(event) =>
+                                setConfig((previous) => ({
+                                  ...previous,
+                                  pageCache: {
+                                    purgeBeforeCrawl:
+                                      event.currentTarget.checked,
+                                  },
+                                }))
+                              }
+                              styles={switchControlStyles()}
+                            />
+                            <Group justify="flex-end">
+                              <Button
+                                variant="default"
+                                color="orange"
+                                onClick={openInvalidateChangeTokensConfirm}
+                              >
+                                {__("Invalidate all page tokens", TEXT_DOMAIN)}
+                              </Button>
+                            </Group>
+                          </Stack>
                         </Card>
 
                         <Card withBorder shadow="sm" radius="md" padding="lg">
@@ -7567,6 +7745,37 @@ export default function Main({ store }: MainProps) {
               {__("Clear", TEXT_DOMAIN)}
             </Button>
             <Button onClick={closeAwsCreds}>{__("Done", TEXT_DOMAIN)}</Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      <Modal
+        opened={invalidateChangeTokensConfirmOpen}
+        onClose={closeInvalidateChangeTokensConfirm}
+        title={__("Invalidate all page tokens", TEXT_DOMAIN)}
+        centered
+      >
+        <Stack gap="sm">
+          <Text size="sm">
+            {__(
+              "The next incremental crawl will render every HTML page again. This does not queue a job and does not clear the page cache.",
+              TEXT_DOMAIN,
+            )}
+          </Text>
+          <Group justify="flex-end">
+            <Button
+              variant="default"
+              onClick={closeInvalidateChangeTokensConfirm}
+            >
+              {__("Cancel", TEXT_DOMAIN)}
+            </Button>
+            <Button
+              color="orange"
+              loading={invalidatingChangeTokens}
+              onClick={() => void invalidateAllChangeTokens()}
+            >
+              {__("Invalidate tokens", TEXT_DOMAIN)}
+            </Button>
           </Group>
         </Stack>
       </Modal>

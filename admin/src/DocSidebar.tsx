@@ -172,6 +172,86 @@ const pages = {
         </List.Item>
       </List>
 
+      <Title order={3} mt="md" id="site-wide-change-tokens">
+        <span className="highlightable">
+          {__("Site-wide Change Tokens", TEXT_DOMAIN)}
+        </span>
+      </Title>
+      <Text>
+        {__(
+          "Static Publisher already tracks posts, archives, menus, block templates, theme files, and supported builder dependencies. Add only site-wide inputs that those built-in rules cannot see.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+      <List size="sm" spacing="xs" withPadding mt="xs">
+        <List.Item>
+          {__(
+            "Watched option names are exact WordPress option keys. Only a stable hash of each value enters the token; values are never returned by the API or written to crawl logs.",
+            TEXT_DOMAIN,
+          )}
+        </List.Item>
+        <List.Item>
+          {__(
+            "Watched action hooks should be stable save, activate, deactivate, delete, or restore events published by the owning plugin. Each request increments the site revision at most once.",
+            TEXT_DOMAIN,
+          )}
+        </List.Item>
+        <List.Item>
+          {__(
+            "Do not add request lifecycle hooks such as init, wp, template_redirect, shutdown, rest_api_init, or admin_init. They would invalidate every page continuously and are rejected when saving.",
+            TEXT_DOMAIN,
+          )}
+        </List.Item>
+        <List.Item>
+          {__(
+            "Invalidate all page tokens is an explicit escape hatch for a site-wide change that has no stable option or action. It does not start a publish job.",
+            TEXT_DOMAIN,
+          )}
+        </List.Item>
+      </List>
+
+      <Title order={3} mt="md" id="watched-wordpress-options">
+        <span className="highlightable">
+          {__("Watched WordPress Options", TEXT_DOMAIN)}
+        </span>
+      </Title>
+      <Text>
+        {__(
+          "Use one exact option name per line. Missing and false-valued options are distinguished, so creation, update, and deletion all affect page tokens.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+
+      <Title order={3} mt="md" id="watched-wordpress-actions">
+        <span className="highlightable">
+          {__("Watched WordPress Actions", TEXT_DOMAIN)}
+        </span>
+      </Title>
+      <Text>
+        {__(
+          "Use documented hooks from the plugin that owns the data. Hook names may contain letters, digits, underscores, dots, colons, slashes, and hyphens. Configuration changes take effect on the next WordPress request.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+
+      <Title order={3} mt="md" id="page-cache-purge">
+        <span className="highlightable">
+          {__("Page-cache Purge", TEXT_DOMAIN)}
+        </span>
+      </Title>
+      <Text>
+        {__(
+          "When enabled, crawl-like jobs call the authenticated page-cache provider immediately before discovery. The job stops before changing export output unless the provider confirms a complete purge. The Static Publisher is cache-plugin agnostic; the server must install an adapter for its cache layer.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+      <Text mt="xs">
+        {__(
+          "A full purge protects export freshness but means each unique URL is a cache miss on its first crawl request. The request then repopulates that page for later visitors or retries. Deploy-only and CDN-invalidation-only jobs do not touch the WordPress page cache.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+
       <Title order={3} mt="md" id="post-crawl-copy-map">
         <span className="highlightable">
           {__("Post-Crawl Copy Map", TEXT_DOMAIN)}

@@ -190,6 +190,12 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
             ),
         ));
 
+        register_rest_route(self::REST_NAMESPACE, '/change-token-revision', array(
+            'methods' => 'POST',
+            'permission_callback' => array($this, 'canManageWrite'),
+            'callback' => array($this, 'handleBumpChangeTokenRevision'),
+        ));
+
         register_rest_route(self::REST_NAMESPACE, '/jobs', array(
             'methods' => 'POST',
             'permission_callback' => array($this, 'canManageWrite'),
@@ -389,6 +395,18 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
             'success' => true,
             'config' => $resolvedConfig,
             'message' => __('Configuration saved.', 'smartcloud-static-publisher'),
+        ), 200);
+    }
+
+    public function handleBumpChangeTokenRevision(): WP_REST_Response
+    {
+        $revision = $this->plugin->bumpChangeTokenRevision('manual-admin');
+
+        return new WP_REST_Response(array(
+            'success' => true,
+            'revision' => max(0, (int) ($revision['revision'] ?? 0)),
+            'updatedAt' => sanitize_text_field((string) ($revision['updatedAt'] ?? '')),
+            'message' => __('All page change tokens were invalidated. The next incremental crawl will render them again.', 'smartcloud-static-publisher'),
         ), 200);
     }
 

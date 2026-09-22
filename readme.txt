@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.24
+Stable tag: 1.0.25
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -508,6 +508,13 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.0.25 =
+* Incremental publishing: Add generic site-wide change-token dependencies for exact WordPress options and stable plugin action hooks, plus a guarded manual all-page invalidation action.
+* Privacy: Hash watched option values and custom dependency payloads inside WordPress; raw values are never returned by the token API or written to crawl logs.
+* Source freshness: Add a cache-plugin-agnostic, authenticated purge-provider contract and stop crawl-like jobs before changing export output unless a configured provider confirms a complete site cache purge.
+* Documentation: Explain safe dependency hooks, rejected request-lifecycle hooks, page-cache adapter requirements, job coverage, and first-request cache-miss behavior in the admin sidebar and developer guide.
+* Dependencies: Requires @smart-cloud/publisher-exporter 1.1.74 when page-cache purge is enabled.
+
 = 1.0.24 =
 * Lambda rendering: Group pages into configurable batches so one warm Chromium process can render several URLs sequentially while preserving bounded Lambda fan-out and retrying only failed URLs.
 * Processing controls: Put general concurrency first, show Lambda batch controls only while delegation is enabled, align paired inputs, and retain stepper-friendly editable blank states.
@@ -636,6 +643,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.25 =
+Install @smart-cloud/publisher-exporter 1.1.74 and restart the external queue runner before enabling page-cache purge. Keep purge disabled until a server adapter implements the generic provider contract and a real source request proves MISS-to-HIT behavior without caching authentication redirects or logged-in HTML. The first incremental crawl after upgrading may render all supported pages once because the global token schema now includes the site revision and configured dependency hashes.
 
 = 1.0.24 =
 After active jobs finish, install @smart-cloud/publisher-exporter 1.1.72 and restart every external coordinator queue runner. The saved-page counter fix applies to new jobs; it does not rewrite an active job's progress. Existing tested Lambda workers on 1.1.71 can remain in place because the 1.1.72 remote-worker bundle is byte-identical; no stack update or remote-workers.json replacement is needed solely for this counter fix. If upgrading older worker infrastructure, deploy workers with the 1.1.71 Chromium launch fix and install the regenerated remote-workers.json to enable direct DynamoDB intra-batch progress; older configs expose progress only after a batch completes. Render batching defaults to 5 URLs; review render, rewrite, and deploy batch sizes before increasing them. Republish targets produced by the earlier delegated rewrite implementation to replace incorrect S3 Content-Type metadata.

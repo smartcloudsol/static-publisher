@@ -195,6 +195,11 @@ async function openFixture(
         assetPathPrefixes: [],
         blockedPathPrefixes: [],
         blockedSearchFragments: [],
+        changeTokenDependencies: {
+          optionNames: ["fixture_global_option"],
+          actionHooks: ["fixture/settings_updated"],
+        },
+        pageCache: { purgeBeforeCrawl: true },
         extraReplacements: {},
         postCrawlCopyMap: {},
         outputDir: "export",
@@ -278,6 +283,16 @@ async function openFixture(
     if (path === "/publisher/config" && route.request().method() === "POST") {
       savedConfig = route.request().postDataJSON();
       json = { config: savedConfig, message: "Configuration saved." };
+    } else if (
+      path === "/publisher/change-token-revision" &&
+      route.request().method() === "POST"
+    ) {
+      json = {
+        success: true,
+        revision: 2,
+        updatedAt: "2026-09-22T10:00:00Z",
+        message: "All page change tokens were invalidated.",
+      };
     } else if (path === "/publisher/state")
       json = {
         config,
@@ -439,6 +454,62 @@ try {
       }
     });
   }
+
+  await test("site-wide dependencies and page-cache controls remain generic", async () => {
+    const { page, errors, getSavedConfig } = await openFixture({
+      width: 1440,
+      height: 1000,
+    });
+    try {
+      await page.getByText("Configuration", { exact: true }).click();
+      const optionNames = page.getByRole("textbox", {
+        name: /^Watched WordPress options/,
+      });
+      const actionHooks = page.getByRole("textbox", {
+        name: /^Watched WordPress action hooks/,
+      });
+      assert.equal(await optionNames.inputValue(), "fixture_global_option");
+      assert.equal(await actionHooks.inputValue(), "fixture/settings_updated");
+      const purgeLabel = page.getByText("Purge page cache before crawl", {
+        exact: true,
+      });
+      const purgeToggle = purgeLabel
+        .locator('xpath=ancestor::*[contains(@class,"mantine-Switch-root")]')
+        .locator('input[type="checkbox"]');
+      assert.equal(await purgeToggle.isChecked(), true);
+
+      await optionNames.fill("custom_theme_css\nfixture_global_option");
+      const saved = page.waitForResponse((response) =>
+        new URL(response.url()).pathname === "/publisher/config" &&
+        response.request().method() === "POST",
+      );
+      await page
+        .getByRole("button", { name: "Save WordPress Configuration" })
+        .click();
+      await saved;
+      assert.deepEqual(getSavedConfig().changeTokenDependencies, {
+        optionNames: ["custom_theme_css", "fixture_global_option"],
+        actionHooks: ["fixture/settings_updated"],
+      });
+      assert.deepEqual(getSavedConfig().pageCache, {
+        purgeBeforeCrawl: true,
+      });
+
+      await page
+        .getByRole("button", { name: "Invalidate all page tokens" })
+        .click();
+      const invalidation = page.waitForResponse((response) =>
+        new URL(response.url()).pathname ===
+          "/publisher/change-token-revision" &&
+        response.request().method() === "POST",
+      );
+      await page.getByRole("button", { name: "Invalidate tokens" }).click();
+      await invalidation;
+      assert.deepEqual(errors, []);
+    } finally {
+      await page.close();
+    }
+  });
 
   await test("common Lambda controls preserve mixed legacy settings until touched", async () => {
     const { page, errors, getSavedConfig } = await openFixture(
