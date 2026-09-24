@@ -1,6 +1,9 @@
 *.zip
 /**/node_modules/
 /**/paid-features/
+/**/protected/
+/**/scripts/
+/**/publish/
 /**/index.html
 /admin/public
 /exporter
