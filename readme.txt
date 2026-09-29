@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.25
+Stable tag: 1.0.26
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -311,6 +311,11 @@ Use the `Temp AWS creds` dialog in the Job Queue panel and provide:
 
 These are attached to the queued job and injected by queue-runner only for that job process.
 
+= Can deployment targets use different AWS accounts? =
+Yes. The base target and each extra deployment target can select an optional named AWS credential profile. Local S3 deploy and CloudFront invalidation resolve that profile from the queue-runner user's standard AWS shared config. Only the profile name is stored in WordPress; do not store access keys in plugin settings. Temporary credentials attached to a queued job take precedence.
+
+When S3 deploy is delegated to Lambda, the VM profile is not available inside Lambda. Configure that CDK target with an allowlisted cross-account role instead. The coordinator still uses the named profile for CloudFront invalidation when configured.
+
 = Why use sitemap-based crawling? =
 It avoids non-deterministic router crawling and gives controlled page discovery, including sitemap index recursion.
 
@@ -421,6 +426,8 @@ Command-to-profile mapping:
 * `invalidate` -> `deploy+invalidate`
 * `publish` -> `deploy+invalidate`
 
+The optional AWS credential profile configured for the active deployment target selects which shared-config identity runs these local calls. It is unrelated to the CLI `--profile` argument shown elsewhere, which selects a Static Publisher deployment target.
+
 `deploy-only` policy (S3 only):
 
 `{
@@ -507,6 +514,12 @@ SmartCloud Static Publisher is shipped to WordPress.org as a pre-built distribut
 Build steps and development notes are documented in the repository README.
 
 == Changelog ==
+
+= 1.0.26 =
+* Deployment credentials: Let the base target and each subscription-backed deployment profile select an optional named AWS shared-config profile for local S3 deployment and CloudFront invalidation without storing access keys in WordPress.
+* Cross-account deployment: Document the separation between host-side profiles and CDK-allowlisted Lambda target roles, including temporary-credential precedence and target-specific external IDs.
+* Validation: Reject unsafe AWS profile names in WordPress, Publisher Core, and the exporter before constructing AWS clients.
+* Dependencies: Update Publisher Core to 1.1.11, Publisher Admin to 1.0.13, and require @smart-cloud/publisher-exporter 1.1.81 for named profiles and delegated cross-account targets.
 
 = 1.0.25 =
 * Incremental publishing: Add generic site-wide change-token dependencies for exact WordPress options and stable plugin action hooks, plus a guarded manual all-page invalidation action.
@@ -643,6 +656,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.26 =
+Install @smart-cloud/publisher-exporter 1.1.81 on the coordinator. Before selecting a delegated cross-account target, deploy the updated worker stack with its exact S3-only target role and external ID, then reinstall the generated remote-workers.json. Configure the queue-runner user's named AWS profile with the separate coordinator target role when local S3 or CloudFront calls need that identity.
 
 = 1.0.25 =
 Install @smart-cloud/publisher-exporter 1.1.74 and restart the external queue runner before enabling page-cache purge. Keep purge disabled until a server adapter implements the generic provider contract and a real source request proves MISS-to-HIT behavior without caching authentication redirects or logged-in HTML. The first incremental crawl after upgrading may render all supported pages once because the global token schema now includes the site revision and configured dependency hashes.

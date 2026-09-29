@@ -125,6 +125,7 @@ export interface PublisherCloudFrontConfig {
 }
 
 export interface PublisherDeploymentProfile {
+  awsProfile?: string;
   targetOrigin?: string;
   extraReplacements?: Record<string, string>;
   s3?: Partial<PublisherS3Config>;

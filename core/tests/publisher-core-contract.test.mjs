@@ -12,6 +12,7 @@ const baseProfileConfig = {
   subscriptionType: 'PROFESSIONAL',
   deploymentProfiles: {
     production: {
+      awsProfile: ' production-account ',
       targetOrigin: 'https://example.com',
     },
     fallback: {
@@ -131,6 +132,8 @@ test('resolvePublisherCrawlMode follows subscription gates for incremental mode'
 test('deployment profile resolution handles requested, override/default, and unknown profile states', () => {
   const config = sanitizePublisherConfig(baseProfileConfig);
 
+  assert.equal(config.deploymentProfiles.production.awsProfile, 'production-account');
+
   assert.equal(resolvePublisherDeploymentProfile(config, 'production'), config.deploymentProfiles.production);
   assert.equal(resolvePublisherDeploymentProfile(config, undefined), config.deploymentProfiles.fallback);
   assert.equal(resolvePublisherDeploymentProfile(config, 'missing'), config.deploymentProfiles.fallback);
@@ -152,4 +155,16 @@ test('deployment profile resolution handles requested, override/default, and unk
     defaultDeploymentProfile: '',
   };
   assert.equal(resolvePublisherDeploymentProfile(withoutDefaultOrOverride, 'missing'), null);
+});
+
+test('publisher config rejects unsafe AWS profile names', () => {
+  const config = sanitizePublisherConfig({
+    deploymentProfiles: {
+      safe: { awsProfile: 'client.production' },
+      unsafe: { awsProfile: '../client account' },
+    },
+  });
+
+  assert.equal(config.deploymentProfiles.safe.awsProfile, 'client.production');
+  assert.equal(Object.hasOwn(config.deploymentProfiles.unsafe, 'awsProfile'), false);
 });

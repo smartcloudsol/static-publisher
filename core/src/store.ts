@@ -116,6 +116,16 @@ function sanitizeDeploymentProfile(
   const source = input as Record<string, unknown>;
   const out: PublisherDeploymentProfile = {};
 
+  if (
+    typeof source.awsProfile === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9_.@+=,-]{0,127}$/.test(source.awsProfile.trim())
+  ) {
+    const awsProfile = source.awsProfile.trim();
+    if (awsProfile) {
+      out.awsProfile = awsProfile;
+    }
+  }
+
   if (typeof source.targetOrigin === "string") {
     const targetOrigin = normalizeOriginOrDot(source.targetOrigin);
     if (targetOrigin) {

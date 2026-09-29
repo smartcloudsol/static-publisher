@@ -113,7 +113,7 @@ const pages = {
       </Title>
       <Text>
         {__(
-          "The base target defines where the normal deploy goes: target origin, S3 bucket/prefix, region, sync mode, and CloudFront invalidation settings.",
+          "The base target defines where the normal deploy goes: target origin, S3 bucket/prefix, region, optional local AWS credential profile, sync mode, and CloudFront invalidation settings.",
           TEXT_DOMAIN,
         )}
       </Text>
@@ -714,6 +714,24 @@ const pages = {
         )}
       </Text>
 
+      <Title order={3} mt="md" id="aws-profile">
+        <span className="highlightable">
+          {__("AWS Credential Profile", TEXT_DOMAIN)}
+        </span>
+      </Title>
+      <Text>
+        {__(
+          "Optional named profile from the exporter host's AWS shared config. The local exporter uses it for S3 deploy and CloudFront invalidation; leave it empty to use environment credentials, the host instance role, or the ambient default chain.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+      <Text mt="xs">
+        {__(
+          "The setting stores only the profile name, never access keys. One-time credentials supplied with a queued job take precedence. A delegated Lambda deploy ignores this target profile and uses its worker execution role or a CDK-configured cross-account target role. The installed remote-workers.json may independently name a host profile for reaching a worker stack in another account.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+
       <Title order={3} mt="md" id="cloudfront-distribution-id">
         <span className="highlightable">
           {__("CloudFront Distribution ID", TEXT_DOMAIN)}
@@ -795,7 +813,7 @@ const pages = {
       </Title>
       <Text>
         {__(
-          "Shell mode uses ambient credentials (SSO/session/env/instance role). Temp mode allows one-time credentials per queued job.",
+          "Shell mode uses the active target's configured AWS credential profile when present, otherwise ambient credentials (SSO/session/env/instance role). Temp mode allows one-time credentials per queued job and takes precedence over the named profile.",
           TEXT_DOMAIN,
         )}
       </Text>

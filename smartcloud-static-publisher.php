@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.0.25
+ * Version:           1.0.26
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.0.25';
+const VERSION = '1.0.26';
 
 final class Plugin
 {
@@ -412,6 +412,7 @@ final class Plugin
         $config = array(
             'sourceOrigin' => $siteAddressOrigin,
             'targetOrigin' => $this->sanitizeOriginOrDot($input['targetOrigin'] ?? ''),
+            'awsProfile' => $this->sanitizeAwsProfileName($input['awsProfile'] ?? ''),
             'ignoreHttpsErrors' => !empty($input['ignoreHttpsErrors']),
             'urlRewriteMode' => $rewriteMode,
             'exporterDir' => $this->sanitizeOptionalHostPath($input['exporterDir'] ?? ''),
@@ -579,6 +580,18 @@ final class Plugin
         $raw = trim((string) $value);
         $raw = preg_replace('/[\x00-\x1F\x7F]/', '', $raw);
         return is_string($raw) ? $raw : '';
+    }
+
+    private function sanitizeAwsProfileName($value): string
+    {
+        $raw = trim((string) $value);
+        if ($raw === '' || strlen($raw) > 128) {
+            return '';
+        }
+
+        return preg_match('/^[A-Za-z0-9][A-Za-z0-9_.@+=,-]*$/D', $raw) === 1
+            ? $raw
+            : '';
     }
 
     public function sanitizeAwsTempCreds(array $value): array

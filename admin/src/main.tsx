@@ -254,6 +254,7 @@ type ContentSyncRuntimeState = {
 type PublisherConfig = {
   sourceOrigin: string;
   targetOrigin: string;
+  awsProfile: string;
   ignoreHttpsErrors: boolean;
   urlRewriteMode: RewriteMode;
   exporterDir: string;
@@ -326,6 +327,7 @@ type PublisherConfig = {
 };
 
 type DeploymentProfile = {
+  awsProfile?: string;
   targetOrigin?: string;
   extraReplacements?: Record<string, string>;
   s3?: Partial<PublisherConfig["s3"]>;
@@ -495,6 +497,7 @@ type WpSuiteWindow = Window & {
 const DEFAULT_CONFIG: PublisherConfig = {
   sourceOrigin: "",
   targetOrigin: ".",
+  awsProfile: "",
   ignoreHttpsErrors: false,
   urlRewriteMode: "relative",
   exporterDir: "",
@@ -585,6 +588,7 @@ type KeyValueRow = {
 
 type DeploymentProfileDraft = {
   name: string;
+  awsProfile: string;
   targetOrigin: string;
   s3: {
     bucket: string;
@@ -602,6 +606,7 @@ type DeploymentProfileDraft = {
 
 const NO_DEPLOYMENT_PROFILE_VALUE = "::none::";
 const DEPLOYMENT_PROFILE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
+const AWS_PROFILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.@+=,-]{0,127}$/;
 
 function createKeyValueRow(key = "", value = ""): KeyValueRow {
   return {
@@ -651,6 +656,11 @@ function normalizeDeploymentProfileMap(
 
     const profile = rawProfile as Record<string, unknown>;
     const next: DeploymentProfile = {};
+
+    const awsProfile = String(profile.awsProfile ?? "").trim();
+    if (awsProfile) {
+      next.awsProfile = awsProfile;
+    }
 
     const targetOrigin = String(profile.targetOrigin ?? "").trim();
     if (targetOrigin) {
@@ -798,6 +808,7 @@ function normalizePublisherConfig(config: PublisherConfig): PublisherConfig {
 
   return {
     ...config,
+    awsProfile: String(config.awsProfile ?? "").trim(),
     exporterDir: String(config.exporterDir || "").trim(),
     concurrency,
     assetDownloadConcurrency,
@@ -906,6 +917,7 @@ function createDeploymentProfileDraft(
 ): DeploymentProfileDraft {
   return {
     name,
+    awsProfile: profile?.awsProfile ?? "",
     targetOrigin: profile?.targetOrigin ?? "",
     s3: {
       bucket: profile?.s3?.bucket ?? "",
@@ -926,6 +938,10 @@ function buildDeploymentProfileFromDraft(
   draft: DeploymentProfileDraft,
 ): DeploymentProfile {
   const profile: DeploymentProfile = {};
+  const awsProfile = draft.awsProfile.trim();
+  if (awsProfile) {
+    profile.awsProfile = awsProfile;
+  }
   const targetOrigin = draft.targetOrigin.trim();
   if (targetOrigin) {
     profile.targetOrigin = targetOrigin;
@@ -982,6 +998,7 @@ function buildDeploymentProfileFromDraft(
 
 function deploymentProfileHasOverrides(profile: DeploymentProfile): boolean {
   return (
+    String(profile.awsProfile ?? "").trim() !== "" ||
     String(profile.targetOrigin ?? "").trim() !== "" ||
     Object.keys(profile.extraReplacements ?? {}).length > 0 ||
     Object.values(profile.s3 ?? {}).some(
@@ -2234,6 +2251,23 @@ export default function Main({ store }: MainProps) {
       return;
     }
 
+    const normalizedAwsProfile = deploymentProfileDraft.awsProfile.trim();
+    if (
+      normalizedAwsProfile &&
+      !AWS_PROFILE_NAME_PATTERN.test(normalizedAwsProfile)
+    ) {
+      notifications.show({
+        title: __("Deployment profile validation", TEXT_DOMAIN),
+        message: __(
+          "AWS credential profile must start with a letter or number and may contain only letters, numbers, dot, dash, underscore, comma, plus, equals, or at-sign characters.",
+          TEXT_DOMAIN,
+        ),
+        color: "red",
+        icon: <IconAlertCircle size={16} />,
+      });
+      return;
+    }
+
     const nextProfile = buildDeploymentProfileFromDraft(deploymentProfileDraft);
     if (!deploymentProfileHasOverrides(nextProfile)) {
       notifications.show({
@@ -3317,6 +3351,19 @@ export default function Main({ store }: MainProps) {
   };
 
   const saveConfig = async () => {
+    const normalizedAwsProfile = config.awsProfile.trim();
+    if (
+      normalizedAwsProfile &&
+      !AWS_PROFILE_NAME_PATTERN.test(normalizedAwsProfile)
+    ) {
+      notifications.show({
+        title: __("Configuration validation", TEXT_DOMAIN),
+        message: __("Enter a valid AWS credential profile name.", TEXT_DOMAIN),
+        color: "red",
+        icon: <IconAlertCircle size={16} />,
+      });
+      return;
+    }
     setSaving(true);
     try {
       // PRO settings have their own remote persistence path. The normal
@@ -4516,6 +4563,32 @@ export default function Main({ store }: MainProps) {
                                 "https://www.example.com or .",
                                 TEXT_DOMAIN,
                               )}
+                            />
+                            <TextInput
+                              label={infoLabel(
+                                __("AWS credential profile", TEXT_DOMAIN),
+                                "aws-profile",
+                              )}
+                              description={__(
+                                "Optional named profile used by the local exporter for S3 deploy and CloudFront invalidation. Leave empty to use ambient credentials.",
+                                TEXT_DOMAIN,
+                              )}
+                              value={config.awsProfile}
+                              error={
+                                config.awsProfile.trim() !== "" &&
+                                !AWS_PROFILE_NAME_PATTERN.test(
+                                  config.awsProfile.trim(),
+                                )
+                                  ? __("Invalid AWS profile name.", TEXT_DOMAIN)
+                                  : undefined
+                              }
+                              onChange={(event) =>
+                                setConfig((prev) => ({
+                                  ...prev,
+                                  awsProfile: event.currentTarget.value,
+                                }))
+                              }
+                              placeholder="wpsuite-production"
                             />
                             <TextInput
                               label={infoLabel(
@@ -6691,6 +6764,9 @@ export default function Main({ store }: MainProps) {
                               </Table.Th>
                               <Table.Th>{__("S3", TEXT_DOMAIN)}</Table.Th>
                               <Table.Th>
+                                {__("AWS profile", TEXT_DOMAIN)}
+                              </Table.Th>
+                              <Table.Th>
                                 {__("CloudFront", TEXT_DOMAIN)}
                               </Table.Th>
                               <Table.Th>
@@ -6712,6 +6788,9 @@ export default function Main({ store }: MainProps) {
                                   </Table.Td>
                                   <Table.Td>
                                     {summarizeDeploymentProfileS3(profile)}
+                                  </Table.Td>
+                                  <Table.Td>
+                                    {profile.awsProfile || "-"}
                                   </Table.Td>
                                   <Table.Td>
                                     {summarizeDeploymentProfileCloudFront(
@@ -7448,6 +7527,31 @@ export default function Main({ store }: MainProps) {
             placeholder="https://staging.example.com or ."
             description={__(
               "Optional. Rewrites links for this target. Use '.' for relative output.",
+              TEXT_DOMAIN,
+            )}
+          />
+
+          <TextInput
+            label={__("AWS credential profile override", TEXT_DOMAIN)}
+            value={deploymentProfileDraft.awsProfile}
+            error={
+              deploymentProfileDraft.awsProfile.trim() !== "" &&
+              !AWS_PROFILE_NAME_PATTERN.test(
+                deploymentProfileDraft.awsProfile.trim(),
+              )
+                ? __("Invalid AWS profile name.", TEXT_DOMAIN)
+                : undefined
+            }
+            onChange={(event) => {
+              const value = event.currentTarget.value;
+              setDeploymentProfileDraft((prev) => ({
+                ...prev,
+                awsProfile: value,
+              }));
+            }}
+            placeholder="client-production"
+            description={__(
+              "Optional. Overrides the base named profile for local S3 and CloudFront calls. Delegated Lambda deploys use the CDK-configured worker or target role instead.",
               TEXT_DOMAIN,
             )}
           />
