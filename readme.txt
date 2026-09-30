@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.26
+Stable tag: 1.0.27
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -515,6 +515,10 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.0.27 =
+* Shared styling: Bundle WP Suite Hub 2.5.17 and the updated shared settings so administrators can list additional absolute or site-relative stylesheet URLs for supported frontend Shadow DOM components alongside the WP Suite Theme CSS.
+* Dependencies: Refresh Publisher Core to 1.1.12, Publisher Admin to 1.0.14, and the separately installed publisher-exporter to 1.1.83 for the shared core contract.
+
 = 1.0.26 =
 * Deployment credentials: Let the base target and each subscription-backed deployment profile select an optional named AWS shared-config profile for local S3 deployment and CloudFront invalidation without storing access keys in WordPress.
 * Cross-account deployment: Document the separation between host-side profiles and CDK-allowlisted Lambda target roles, including temporary-credential precedence and target-specific external IDs.
@@ -656,6 +660,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.0.27 =
+Install @smart-cloud/publisher-exporter 1.1.83 on each queue-runner host and restart the runner after active jobs finish. Additional stylesheet URLs are optional; review their sources before adding them in WP Suite General Settings. Existing exports and queue configuration need no migration.
 
 = 1.0.26 =
 Install @smart-cloud/publisher-exporter 1.1.81 on the coordinator. Before selecting a delegated cross-account target, deploy the updated worker stack with its exact S3-only target role and external ID, then reinstall the generated remote-workers.json. Configure the queue-runner user's named AWS profile with the separate coordinator target role when local S3 or CloudFront calls need that identity.
