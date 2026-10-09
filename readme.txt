@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.0.27
+Stable tag: 1.1.0
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -345,11 +345,10 @@ This should only be used for trusted internal environments. Keep it disabled for
 
 == Screenshots ==
 
-1. Static Publisher admin dashboard
-2. Core export configuration panel
-3. S3 and CloudFront settings
-4. Job queue and command selection
-5. Runtime logs viewer
+1. Publishing jobs and runner status in the detailed admin.
+2. Core export configuration and the publishing destination.
+3. Base S3 deployment target and optional CloudFront invalidation settings.
+4. The Publish dialog for selecting an available task and target.
 
 == External Services ==
 
@@ -515,6 +514,14 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.1.0 =
+* Improve shared navigation alignment, connection details, inline help and setup field guidance.
+* Fix publishing dialog and detailed settings initialization on the integrated product page.
+* Keep publishing setup, status and detailed settings on one product page.
+* Add a compact publishing dialog with task, target and inherited AWS profile information; honor Pro access and preserve saved configuration.
+* Add shared product navigation and separate Platform Settings with reCAPTCHA, Styling and Translations tabs.
+* Preserve existing admin links, permissions and compatibility with older plugin menus.
+
 = 1.0.27 =
 * Shared styling: Bundle WP Suite Hub 2.5.17 and the updated shared settings so administrators can list additional absolute or site-relative stylesheet URLs for supported frontend Shadow DOM components alongside the WP Suite Theme CSS.
 * Dependencies: Refresh Publisher Core to 1.1.12, Publisher Admin to 1.0.14, and the separately installed publisher-exporter to 1.1.83 for the shared core contract.
@@ -660,6 +667,9 @@ Build steps and development notes are documented in the repository README.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
 == Upgrade Notice ==
+
+= 1.1.0 =
+WP Suite admin navigation now groups everyday tasks by capability and detailed settings under Advanced. Existing settings and bookmarked admin URLs remain available; no configuration migration is required.
 
 = 1.0.27 =
 Install @smart-cloud/publisher-exporter 1.1.83 on each queue-runner host and restart the runner after active jobs finish. Additional stylesheet URLs are optional; review their sources before adding them in WP Suite General Settings. Existing exports and queue configuration need no migration.

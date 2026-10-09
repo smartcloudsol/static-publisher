@@ -82,7 +82,12 @@ const bundle = await build({
 });
 const js = bundle.outputFiles.find((file) => file.path.endsWith(".js")).text;
 const css = bundle.outputFiles.find((file) => file.path.endsWith(".css")).text;
-const browser = await chromium.launch({ headless: true });
+// Some headless hosts never deliver animation frames through the GPU path,
+// which stalls Playwright's click stability checks despite visible controls.
+const browser = await chromium.launch({
+  headless: true,
+  args: ["--disable-gpu", "--disable-software-rasterizer"],
+});
 
 const longBaselineReason =
   "The installed WordPress release changed after the last verified content-sync baseline. Run a successful full or incremental publish to establish a new baseline.";
@@ -172,9 +177,11 @@ async function openFixture(
   cardPresentation = null,
   currentProgress = null,
   lambdaConfigOverride = null,
+  navigation = {},
 ) {
   const page = await browser.newPage({ viewport });
   let savedConfig = null;
+  const queuedJobs = [];
   page.setDefaultTimeout(5000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -272,15 +279,19 @@ async function openFixture(
     if (path === "/")
       return route.fulfill({
         contentType: "text/html",
-        body: '<!doctype html><html><head><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><div id="root"></div><script src="/app.js"></script></body></html>',
+        body: `<!doctype html><html><head><link rel="stylesheet" href="/app.css"></head><body style="margin:0">${navigation.unified ? '<div id="launch"></div><div id="wpsuite-product-details" data-wpsuite-product="static-publishing"><div id="smartcloud-static-publisher-admin"></div></div>' : '<div id="root"></div>'}<script src="/app.js"></script></body></html>`,
       });
     if (path === "/app.js")
       return route.fulfill({ contentType: "text/javascript", body: js });
     if (path === "/app.css")
       return route.fulfill({ contentType: "text/css", body: css });
-    const config = await page.evaluate(() => window.fixtureConfig);
+    const config = await page.evaluate(state => state ? (window.fixtureStateConfig ?? window.fixtureConfig) : window.fixtureConfig, path === "/publisher/state");
     let json;
-    if (path === "/publisher/config" && route.request().method() === "POST") {
+    if (path === "/publisher/jobs" && route.request().method() === "POST") {
+      queuedJobs.push(route.request().postDataJSON());
+      if (navigation.rejectJobs) return route.fulfill({ status: 409, json: { message: "Runner baseline needs refresh." } });
+      json = { message: "queued" };
+    } else if (path === "/publisher/config" && route.request().method() === "POST") {
       savedConfig = route.request().postDataJSON();
       json = { config: savedConfig, message: "Configuration saved." };
     } else if (
@@ -296,7 +307,7 @@ async function openFixture(
     } else if (path === "/publisher/state")
       json = {
         config,
-        hasSavedConfiguration: true,
+        hasSavedConfiguration: navigation.hasSavedConfig ?? true,
         availableLogs: [],
         queueItems: [],
         queueLength: 0,
@@ -361,9 +372,13 @@ async function openFixture(
       });
     return route.fulfill({ json });
   });
-  await page.goto("https://publisher.example.test/");
+  await page.goto(`https://publisher.example.test/${navigation.search || ""}`);
   try {
-    await page.getByRole("textbox", { name: /^Crawl mode/ }).waitFor();
+    if (navigation.expectedSection) {
+      await page.locator(".mantine-NavLink-root[data-active]").filter({ hasText: navigation.expectedSection }).waitFor();
+    } else {
+      await page.getByRole("textbox", { name: /^Crawl mode/ }).waitFor();
+    }
   } catch (error) {
     throw new Error(
       `${error.message}\nBrowser errors: ${errors.join("; ")}\n${await page
@@ -371,7 +386,7 @@ async function openFixture(
         .innerText()}`,
     );
   }
-  return { page, errors, getSavedConfig: () => savedConfig };
+  return { page, errors, getSavedConfig: () => savedConfig, queuedJobs };
 }
 
 async function choose(page, label, value) {
@@ -380,6 +395,176 @@ async function choose(page, label, value) {
 }
 
 try {
+  for (const width of [1280, 390]) {
+    await test(`Compact publishing dialog queues saved target settings from collapsed details (${width}px)`, async () => {
+      const { page, errors, queuedJobs, getSavedConfig } = await openFixture({ width, height: 1000 }, false, null, null, null,
+        { awsProfile: "base-runner", defaultDeploymentProfile: "production", deploymentProfiles: { production: { awsProfile: "prod-runner", targetOrigin: "https://published.example.test", s3: { bucket: "prod-bucket", prefix: "www/" } } } },
+        { unified: true });
+      try {
+        assert.equal(await page.getByText("Sitemap-based export control panel for static publishing workflows.").count(), 0);
+        await page.evaluate(() => {
+          document.getElementById("wpsuite-product-details").hidden = true;
+          window.smartcloudWpSuiteSurfaces["static-publishing"](document.getElementById("launch"));
+        });
+        await page.getByRole("button", { name: "Publish…", exact: true }).click();
+        const dialog = page.getByRole("dialog", { name: "Publish site", exact: true });
+        await dialog.waitFor();
+        await page.waitForFunction(() => document.querySelector('input[value="prod-runner"]'));
+        assert.equal(await dialog.getByRole("textbox", { name: "AWS profile", exact: true }).getAttribute("readonly"), "");
+        assert.equal(await dialog.getByRole("textbox", { name: "Target", exact: true }).inputValue(), "Configured default: production");
+        assert.match(await dialog.innerText(), /prod-bucket\/www\//);
+        await dialog.getByRole("button", { name: "Queue publishing job", exact: true }).click();
+        await dialog.waitFor({ state: "hidden" });
+        assert.deepEqual(queuedJobs, [{ command: "publish", crawlMode: "full" }]);
+        assert.equal(getSavedConfig(), null, "Launching does not write saved configuration");
+        assert.deepEqual(errors, []);
+      } finally { await page.close(); }
+    });
+  }
+  await test("Compact publishing dialog disables unpaid tasks and cancellation never queues", async () => {
+    const { page, errors, queuedJobs } = await openFixture({ width: 1280, height: 1000 }, true);
+    try {
+      await page.evaluate(() => window.dispatchEvent(new Event("wpsuite-publisher-launch")));
+      const dialog = page.getByRole("dialog", { name: "Publish site", exact: true });
+      await dialog.getByRole("textbox", { name: "Export mode", exact: true }).click();
+      assert.equal(await page.getByRole("option", { name: "Incremental export (Pro)", exact: true }).getAttribute("data-combobox-disabled"), "true");
+      await page.keyboard.press("Escape");
+      await dialog.getByRole("textbox", { name: "Task", exact: true }).click();
+      assert.equal(await page.getByRole("option", { name: "Synchronize content (Pro)", exact: true }).getAttribute("data-combobox-disabled"), "true");
+      await page.keyboard.press("Escape");
+      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+      assert.deepEqual(queuedJobs, []);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+  await test("Compact publishing dialog preserves task and displays canonical queue errors", async () => {
+    const { page, queuedJobs } = await openFixture({ width: 1280, height: 1000 }, false, null, null, null, null, { rejectJobs: true });
+    try {
+      await page.evaluate(() => window.dispatchEvent(new Event("wpsuite-publisher-launch")));
+      const dialog = page.getByRole("dialog", { name: "Publish site", exact: true });
+      await dialog.getByRole("textbox", { name: "Task", exact: true }).click();
+      await page.getByRole("option", { name: "Export one URL", exact: true }).click();
+      assert.equal(await dialog.getByRole("button", { name: "Queue publishing job", exact: true }).isDisabled(), true);
+      await dialog.getByRole("textbox", { name: "URL path", exact: true }).fill("/selected-page/");
+      await dialog.getByRole("button", { name: "Queue publishing job", exact: true }).click();
+      await dialog.getByRole("alert").filter({ hasText: "Runner baseline needs refresh." }).waitFor();
+      assert.deepEqual(queuedJobs, [{ command: "url", url: "/selected-page/" }]);
+      assert.equal(await dialog.getByRole("textbox", { name: "URL path", exact: true }).inputValue(), "/selected-page/");
+    } finally { await page.close(); }
+  });
+
+  await test("Compact content sync uses the selected saved target and exact enabled rule", async () => {
+    const { page, queuedJobs } = await openFixture({ width: 1280, height: 1000 }, false, null, null, null,
+      { deploymentProfiles: { staging: { awsProfile: "staging-profile" } },
+        scheduler: { enabled: true, rules: [{ id: "staging-sync", command: "content-sync", enabled: true, deploymentProfile: "staging", intervalMinutes: 60, postTypes: ["post"] },
+          { id: "disabled-sync", command: "content-sync", enabled: false, deploymentProfile: "staging", intervalMinutes: 60, postTypes: ["post"] }] } });
+    try {
+      await page.waitForFunction(() => document.querySelector('input[value="incremental"]'));
+      await page.evaluate(() => window.dispatchEvent(new Event("wpsuite-publisher-launch")));
+      const dialog = page.getByRole("dialog", { name: "Publish site", exact: true });
+      await dialog.getByRole("textbox", { name: "Task", exact: true }).click();
+      await page.getByRole("option", { name: "Synchronize content (Pro)", exact: true }).click();
+      await dialog.getByRole("textbox", { name: "Target", exact: true }).click();
+      await page.getByRole("option", { name: "staging", exact: true }).click();
+      assert.equal(await dialog.getByRole("textbox", { name: "AWS profile", exact: true }).inputValue(), "staging-profile");
+      assert.equal(await dialog.getByRole("button", { name: "Queue publishing job", exact: true }).isDisabled(), true);
+      await dialog.getByRole("textbox", { name: "Content-sync rule", exact: true }).click();
+      assert.equal(await page.getByRole("option", { name: "disabled-sync", exact: true }).count(), 0);
+      await page.getByRole("option", { name: "staging-sync", exact: true }).click();
+      await dialog.getByRole("button", { name: "Queue publishing job", exact: true }).click();
+      await dialog.waitFor({ state: "hidden" });
+      assert.deepEqual(queuedJobs, [{ command: "content-sync", deploymentProfile: "staging", contentSyncRuleId: "staging-sync" }]);
+    } finally { await page.close(); }
+  });
+
+  await test("Launch refreshes canonical setup after onboarding without overwriting a detailed draft", async () => {
+    const { page, queuedJobs, getSavedConfig } = await openFixture({ width: 1280, height: 1000 }, false);
+    let release;
+    try {
+      await page.getByText("Configuration", { exact: true }).click();
+      const draft = page.getByRole("textbox", { name: /^Target origin/ });
+      await draft.fill("https://unsaved.example.test");
+      await page.evaluate(() => {
+        window.fixtureStateConfig = { ...window.fixtureConfig, targetOrigin: "https://newly-saved.example.test", awsProfile: "newly-saved-profile",
+          s3: { ...window.fixtureConfig.s3, bucket: "newly-saved-bucket" } };
+        window.dispatchEvent(new CustomEvent("wpsuite-product-saved", { detail: { id: "static-publishing" } }));
+      });
+      const held = new Promise(resolve => { release = resolve; });
+      await page.route("**/publisher/state", async route => { await held; await route.fallback(); });
+      await page.evaluate(() => window.dispatchEvent(new Event("wpsuite-publisher-launch")));
+      const dialog = page.getByRole("dialog", { name: "Publish site", exact: true });
+      await dialog.getByRole("status").filter({ hasText: "Loading current publishing settings" }).waitFor();
+      assert.equal(await dialog.getByRole("button", { name: "Queue publishing job", exact: true }).isDisabled(), true);
+      release();
+      await dialog.getByText(/newly-saved-bucket/).waitFor();
+      assert.match(await dialog.innerText(), /https:\/\/newly-saved.example.test/);
+      assert.equal(await dialog.getByRole("textbox", { name: "AWS profile", exact: true }).inputValue(), "newly-saved-profile");
+      assert.equal(await draft.inputValue(), "https://unsaved.example.test");
+      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+      assert.equal(getSavedConfig(), null);
+      assert.deepEqual(queuedJobs, []);
+    } finally { release?.(); await page.close(); }
+  });
+  await test("Failed launch refresh cannot queue from a stale saved snapshot", async () => {
+    const { page, queuedJobs } = await openFixture({ width: 1280, height: 1000 }, false);
+    try {
+      await page.route("**/publisher/state", route => route.fulfill({ status: 503, json: { message: "Current publishing settings are unavailable." } }));
+      await page.evaluate(() => window.dispatchEvent(new Event("wpsuite-publisher-launch")));
+      const dialog = page.getByRole("dialog", { name: "Publish site", exact: true });
+      await dialog.getByRole("alert").filter({ hasText: "Current publishing settings are unavailable." }).waitFor();
+      assert.equal(await dialog.getByRole("button", { name: "Queue publishing job", exact: true }).isDisabled(), true);
+      assert.deepEqual(queuedJobs, []);
+    } finally { await page.close(); }
+  });
+
+  await test("Publisher menu navigation updates section, preserves query/hash and supports Back/Forward", async () => {
+    const { page, errors } = await openFixture({ width: 1440, height: 1000 }, false, null, null, null, null,
+      { search: "?page=smartcloud-static-publisher&keep=1#rail", expectedSection: "Jobs" });
+    try {
+      await page.getByText("Configuration", { exact: true }).click();
+      await page.waitForFunction(() => new URL(location.href).searchParams.get("section") === "configuration");
+      assert.equal(new URL(page.url()).searchParams.get("keep"), "1");
+      assert.equal(new URL(page.url()).hash, "#rail");
+      await page.getByText("Audit Logs", { exact: true }).click();
+      await page.waitForFunction(() => new URL(location.href).searchParams.get("section") === "audit");
+      await page.evaluate(() => history.back());
+      await page.locator(".mantine-NavLink-root[data-active]").filter({ hasText: "Configuration" }).waitFor();
+      assert.equal(new URL(page.url()).searchParams.get("section"), "configuration");
+      await page.evaluate(() => history.back());
+      await page.locator(".mantine-NavLink-root[data-active]").filter({ hasText: "Jobs" }).waitFor();
+      assert.equal(new URL(page.url()).searchParams.get("section"), "jobs");
+      await page.evaluate(() => history.forward());
+      await page.locator(".mantine-NavLink-root[data-active]").filter({ hasText: "Configuration" }).waitFor();
+      await page.reload();
+      await page.locator(".mantine-NavLink-root[data-active]").filter({ hasText: "Configuration" }).waitFor();
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+  for (const [section, expectedSection] of [
+    ["jobs", "Jobs"], ["configuration", "Configuration"],
+    ["audit", "Audit Logs"], ["scheduler", "Scheduler Settings"],
+    ["extraTargets", "Extra Deployment Targets"],
+  ]) {
+    await test(`deep link ${section} survives loaded Publisher configuration`, async () => {
+      const { page, errors } = await openFixture({ width: 1440, height: 1000 }, false, null, null, null, null, { search: `?section=${section}`, expectedSection });
+      try {
+        assert.equal(await page.locator(".mantine-NavLink-root[data-active]").innerText(), expectedSection);
+        assert.deepEqual(errors, []);
+      } finally { await page.close(); }
+    });
+  }
+  for (const [search, hasSavedConfig, expectedSection] of [
+    ["", false, "Configuration"], ["?section=unknown", false, "Configuration"],
+    ["", true, "Jobs"], ["?section=unknown", true, "Jobs"],
+  ]) {
+    await test(`Publisher default search=${search} saved=${hasSavedConfig}`, async () => {
+      const { page, errors } = await openFixture({ width: 1440, height: 1000 }, false, null, null, null, null, { search, hasSavedConfig, expectedSection });
+      try {
+        assert.equal(await page.locator(".mantine-NavLink-root[data-active]").innerText(), expectedSection);
+        assert.deepEqual(errors, []);
+      } finally { await page.close(); }
+    });
+  }
   for (const [name, viewport] of [
     ["desktop", { width: 1440, height: 1000 }],
     ["mobile", { width: 390, height: 844 }],

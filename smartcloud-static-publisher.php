@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.0.27
+ * Version:           1.1.0
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.0.27';
+const VERSION = '1.1.0';
 
 final class Plugin
 {
@@ -52,6 +52,7 @@ final class Plugin
     private ?Admin $admin = null;
     private ?ContentChangeJournal $contentChangeJournal = null;
     private ?JobAbilities $jobAbilities = null;
+    private bool $queueMutationLockHeld = false;
     private bool $changeTokenRevisionBumpedThisRequest = false;
     private bool $changeTokenRevisionBumpInProgress = false;
 
@@ -609,6 +610,15 @@ final class Plugin
      * @return array<string, mixed>|\WP_Error
      */
     public function enqueueStandardJob(array $data, string $actorSource = 'wp-admin', ?int $actorUserId = null): array|\WP_Error
+    {
+        try {
+            return $this->withQueueMutationLock(fn() => $this->enqueueStandardJobLocked($data, $actorSource, $actorUserId));
+        } catch (\Throwable $error) {
+            return new \WP_Error('publisher_queue_busy', __('Publishing configuration or queue is busy. Try again shortly.', 'smartcloud-static-publisher'), array('status' => 409));
+        }
+    }
+
+    private function enqueueStandardJobLocked(array $data, string $actorSource, ?int $actorUserId): array|\WP_Error
     {
         $command = isset($data['command']) ? sanitize_text_field((string) $data['command']) : '';
         $allowedCommands = array('publish', 'crawl', 'deploy', 'invalidate', 'retry-timeouts', 'url', 'content-sync');
@@ -5437,6 +5447,8 @@ final class Plugin
 
     public function withQueueMutationLock(callable $callback)
     {
+        // Nested enqueue operations on this instance already own the same lock.
+        if ($this->queueMutationLockHeld) return $callback();
         $deadline = microtime(true) + 5.0;
         $staleAfterSeconds = 30;
         $lockKey = self::OPTION_QUEUE_MUTATION_LOCK_KEY;
@@ -5475,9 +5487,11 @@ final class Plugin
             usleep(50000);
         }
 
+        $this->queueMutationLockHeld = true;
         try {
             return $callback();
         } finally {
+            $this->queueMutationLockHeld = false;
             $existing = get_option($lockKey);
             if (is_array($existing) && (($existing['token'] ?? '') === $lockToken)) {
                 delete_option($lockKey);

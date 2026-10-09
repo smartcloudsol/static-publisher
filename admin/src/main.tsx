@@ -59,6 +59,9 @@ import {
 } from "@smart-cloud/publisher-core";
 import { getWpSuite } from "@smart-cloud/wpsuite-core";
 import DocSidebar from "./DocSidebar";
+import PublishDialog, { type PublishRequest } from "./PublishDialog";
+import { requestedPublisherAdminPage, resolvePublisherAdminPage, type PublisherAdminPage } from "./admin-page";
+import { useAdminSectionHistory } from "./admin-section-history";
 import { selectCurrentContentSyncStates } from "./content-sync-status";
 
 const TEXT_DOMAIN = "smartcloud-static-publisher";
@@ -444,12 +447,7 @@ type LoadStateOptions = {
   refreshSelectedLog?: boolean;
 };
 
-type AdminTab =
-  | "jobs"
-  | "configuration"
-  | "audit"
-  | "scheduler"
-  | "extraTargets";
+type AdminTab = PublisherAdminPage;
 
 type AuditArtifact = {
   id: string;
@@ -1951,6 +1949,42 @@ type MainProps = {
 
 export default function Main({ store }: MainProps) {
   const boot = useMemo(() => getBoot(), []);
+  const unifiedProduct = !!document.querySelector('#wpsuite-product-details[data-wpsuite-product="static-publishing"]');
+  const [launchOpen, setLaunchOpen] = useState(false);
+  const [launchState, setLaunchState] = useState<StateResponse | null>(null);
+  const [launchLoading, setLaunchLoading] = useState(false);
+  const [launchError, setLaunchError] = useState("");
+  const launchSequence = useRef(0);
+  const closeLaunch = () => { launchSequence.current += 1; setLaunchOpen(false); };
+  useEffect(() => {
+    const open = () => {
+      const sequence = ++launchSequence.current;
+      setLaunchOpen(true);
+      setLaunchState(null);
+      setLaunchLoading(true);
+      setLaunchError("");
+      if (!boot) {
+        setLaunchError(__("Publishing connection data is unavailable. Refresh this page and try again.", TEXT_DOMAIN));
+        setLaunchLoading(false);
+        return;
+      }
+      // Onboarding can save while the native form stays mounted. Fetch a fresh
+      // launch snapshot without overwriting any unsaved detailed form inputs.
+      void restRequest<StateResponse>(boot, "/state").then(data => {
+        if (sequence !== launchSequence.current) return;
+        if (!data?.config || typeof data.config !== "object" || Array.isArray(data.config)) {
+          throw new Error(__("Publishing settings could not be confirmed. Close this dialog and try again.", TEXT_DOMAIN));
+        }
+        setLaunchState({ ...data, config: normalizePublisherConfig(data.config) });
+      }).catch((failure: unknown) => {
+        if (sequence === launchSequence.current) setLaunchError(failure instanceof Error ? failure.message : __("Could not load publishing settings.", TEXT_DOMAIN));
+      }).finally(() => {
+        if (sequence === launchSequence.current) setLaunchLoading(false);
+      });
+    };
+    window.addEventListener("wpsuite-publisher-launch", open);
+    return () => { launchSequence.current += 1; window.removeEventListener("wpsuite-publisher-launch", open); };
+  }, [boot]);
   const initialProAccess = useMemo(() => getInitialProAccessStatus(), []);
   const isMobile = useMediaQuery(
     `(max-width: ${DEFAULT_THEME.breakpoints.sm})`,
@@ -2080,15 +2114,24 @@ export default function Main({ store }: MainProps) {
     ContentSyncRuleState[]
   >([]);
   const [contentSyncStatusError, setContentSyncStatusError] = useState("");
-  const [mainSection, setMainSection] = useState<AdminTab>("configuration");
+  const [mainSection, setMainSection] = useState<AdminTab>(() => resolvePublisherAdminPage(window.location.search));
   const [hasSavedConfig, setHasSavedConfig] = useState(false);
-  const initialTabResolvedRef = useRef(false);
+  const initialTabResolvedRef = useRef(requestedPublisherAdminPage(window.location.search) !== undefined);
   const [savingSchedulerConfig, setSavingSchedulerConfig] = useState(false);
   const [savingDeploymentTargetsConfig, setSavingDeploymentTargetsConfig] =
     useState(false);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditEntries, setAuditEntries] = useState<AuditLogEntry[]>([]);
   const [auditPage, setAuditPage] = useState(1);
+  const navigateSection = useAdminSectionHistory(mainSection,
+    search => resolvePublisherAdminPage(search, hasSavedConfig),
+    next => {
+      initialTabResolvedRef.current = true;
+      setMainSection(next);
+      if (next === "audit") setAuditPage(1);
+      return next;
+    });
+
   const [auditPageSize, setAuditPageSize] = useState(25);
   const [auditTotal, setAuditTotal] = useState(0);
   const [auditTotalPages, setAuditTotalPages] = useState(1);
@@ -3227,7 +3270,7 @@ export default function Main({ store }: MainProps) {
     () => [
       {
         value: NO_DEPLOYMENT_PROFILE_VALUE,
-        label: __("Use base target settings", TEXT_DOMAIN),
+        label: __("Use configured default target", TEXT_DOMAIN),
       },
       ...deploymentProfileNames.map((name) => ({ value: name, label: name })),
     ],
@@ -3556,6 +3599,13 @@ export default function Main({ store }: MainProps) {
     }
   };
 
+  const queueCompactJob = async (request: PublishRequest) => {
+    if (!launchState || !inferHasSavedConfig(launchState.config, launchState)) throw new Error(__("Save publishing setup before starting a job.", TEXT_DOMAIN));
+    await restRequest<{ message: string }>(boot, "/jobs", { method: "POST", body: JSON.stringify(request) });
+    notifications.show({ title: __("Job queued", TEXT_DOMAIN), message: __("The publishing runner will process this request. Check jobs and logs for its outcome.", TEXT_DOMAIN), color: "green" });
+    await loadState({ syncConfig: false, refreshSelectedLog: true });
+  };
+
   const queueJob = async () => {
     if (!hasSavedConfig) {
       notifications.show({
@@ -3784,6 +3834,15 @@ export default function Main({ store }: MainProps) {
   .logs-controls .logs-actions { justify-content: stretch; }
   .logs-controls .logs-actions > * { flex: 1 1 100%; }
 }`}</style>
+      <PublishDialog opened={launchOpen} onClose={closeLaunch}
+        config={launchState ? { ...launchState.config,
+          scheduler: sanitizeSchedulerFromRemote(savedProConfig?.scheduler, launchState.config.scheduler),
+          deploymentProfiles: normalizeDeploymentProfileMap((savedProConfig?.deploymentProfiles ?? launchState.config.deploymentProfiles ?? {}) as Record<string, unknown>),
+          defaultDeploymentProfile: savedProConfig?.defaultDeploymentProfile ?? launchState.config.defaultDeploymentProfile ?? "",
+        } : null}
+        configured={!!launchState && inferHasSavedConfig(launchState.config, launchState)}
+        loading={launchLoading} loadError={launchError}
+        pro={hasIncrementalAccess} onQueue={queueCompactJob} />
       <DocSidebar
         opened={docOpened}
         close={closeDoc}
@@ -3791,7 +3850,7 @@ export default function Main({ store }: MainProps) {
         scrollToId={scrollToId}
       />
       <Box py="lg" maw={1280} ml={0} mr="auto">
-        <Card p="sm" withBorder mb="md">
+        {!unifiedProduct && <Card p="sm" withBorder mb="md">
           <Group
             align="flex-start"
             style={{
@@ -3808,7 +3867,7 @@ export default function Main({ store }: MainProps) {
                 color: "#218BE6",
               }}
             >
-              {__("SmartCloud Static Publisher", TEXT_DOMAIN)}
+              {__("Static Publishing", TEXT_DOMAIN)}
             </Title>
             <Text c="dimmed" size="sm">
               {__(
@@ -3844,7 +3903,7 @@ export default function Main({ store }: MainProps) {
               </Badge>
             </Group>
           </Group>
-        </Card>
+        </Card>}
 
         {loading ? (
           <Group justify="center" mt="xl">
@@ -3867,7 +3926,7 @@ export default function Main({ store }: MainProps) {
                             label={item.label}
                             leftSection={item.icon}
                             active={mainSection === item.value}
-                            onClick={() => setMainSection(item.value)}
+                            onClick={() => navigateSection(item.value)}
                           />
                         ))}
                       </Stack>
@@ -3888,10 +3947,7 @@ export default function Main({ store }: MainProps) {
                               if (item.disabled) {
                                 return;
                               }
-                              setMainSection(item.value);
-                              if (item.value === "audit") {
-                                setAuditPage(1);
-                              }
+                              navigateSection(item.value);
                             }}
                           />
                         ))}
@@ -3916,7 +3972,7 @@ export default function Main({ store }: MainProps) {
                               label={item.label}
                               leftSection={item.icon}
                               active={mainSection === item.value}
-                              onClick={() => setMainSection(item.value)}
+                              onClick={() => navigateSection(item.value)}
                             />
                           ))}
                         </Stack>
@@ -3937,10 +3993,7 @@ export default function Main({ store }: MainProps) {
                                 if (item.disabled) {
                                   return;
                                 }
-                                setMainSection(item.value);
-                                if (item.value === "audit") {
-                                  setAuditPage(1);
-                                }
+                                navigateSection(item.value);
                               }}
                             />
                           ))}

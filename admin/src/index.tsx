@@ -1,4 +1,4 @@
-import { MantineProvider, createTheme } from "@mantine/core";
+import { Button, MantineProvider, createTheme } from "@mantine/core";
 import { Notifications } from "@mantine/notifications";
 import { getStore } from "@smart-cloud/publisher-core";
 import { __ } from "@wordpress/i18n";
@@ -20,24 +20,14 @@ const theme = createTheme({
   },
 });
 
+const hubPage = (new URLSearchParams(window.location.search).get("page") ?? "").startsWith("smartcloud-wpsuite");
 const mountNode =
   document.getElementById("smartcloud-static-publisher-admin") ??
-  document.getElementById("root");
-
-if (!mountNode) {
-  throw new Error(
-    __(
-      "Static Publisher admin mount node is missing.",
-      "smartcloud-static-publisher",
-    ),
-  );
-}
-
-const rootMountNode = mountNode;
+  (hubPage ? null : document.getElementById("root"));
 
 async function init() {
   const store = await getStore();
-  createRoot(rootMountNode).render(
+  createRoot(mountNode!).render(
     <StrictMode>
       <MantineProvider theme={theme} defaultColorScheme="light">
         <Notifications position="top-right" zIndex={100002} />
@@ -47,4 +37,22 @@ async function init() {
   );
 }
 
-void init();
+// The detail application remains mounted while its shared product panel is collapsed.
+// Its single state owner also handles the compact launch dialog.
+if (mountNode) void init();
+
+type SurfaceRegistry = Record<string, (element: HTMLElement) => () => void>;
+const surfaceWindow = window as Window & { smartcloudWpSuiteSurfaces?: SurfaceRegistry };
+surfaceWindow.smartcloudWpSuiteSurfaces ??= {};
+surfaceWindow.smartcloudWpSuiteSurfaces["static-publishing"] = (element) => {
+  const root = createRoot(element);
+  root.render(<MantineProvider theme={theme} defaultColorScheme="light">
+    {mountNode ? <Button onClick={() => window.dispatchEvent(new Event("wpsuite-publisher-launch"))}>
+      {__("Publish…", "smartcloud-static-publisher")}
+    </Button> : <Button component="a" href="admin.php?page=smartcloud-static-publisher&section=jobs">
+      {__("Open publishing jobs", "smartcloud-static-publisher")}
+    </Button>}
+  </MantineProvider>);
+  return () => root.unmount();
+};
+window.dispatchEvent(new Event("smartcloud-wpsuite-surface-ready"));

@@ -12,8 +12,13 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+require_once __DIR__ . '/surface.php';
+require_once __DIR__ . '/configuration-reset.php';
+
 class Admin
 {
+    use PublishingSurface;
+    use PublishingConfigurationReset;
     private const SLUG = 'smartcloud-static-publisher';
     private const MENU_SLUG = 'smartcloud-static-publisher';
     private const OPTION_KEY = 'smartcloud_static_publisher_config';
@@ -21,6 +26,7 @@ class Admin
 
     private Plugin $plugin;
     private string $adminPageHook = '';
+    private bool $assetsEnqueued = false;
 
     public function __construct(Plugin $plugin)
     {
@@ -29,9 +35,47 @@ class Admin
 
     public function registerHooks(): void
     {
+        add_filter('smartcloud_wpsuite_admin_capabilities', array($this, 'registerHubCapabilities'));
         add_action('admin_menu', array($this, 'addMenu'), 30);
         add_action('admin_enqueue_scripts', array($this, 'enqueueAssets'));
         add_action('rest_api_init', array($this, 'registerRestRoutes'));
+    }
+
+    /** Register navigation without depending on a particular hub generation. */
+    public function registerHubCapabilities(array $capabilities): array
+    {
+        $capabilities[] = array(
+            'schema_version' => 1,
+            'id' => 'static-publishing',
+            'product_id' => 'smartcloud-static-publisher',
+            'label' => __('Static Publishing', 'smartcloud-static-publisher'),
+            'product' => __('Static Publisher', 'smartcloud-static-publisher'),
+            'description' => __('Keep WordPress as the CMS and publish a static frontend.', 'smartcloud-static-publisher'),
+            'order' => 60,
+            'primary_url' => admin_url('admin.php?page=' . self::MENU_SLUG),
+            'primary_label' => __('Open Static Publishing', 'smartcloud-static-publisher'),
+            'required_capability' => 'manage_options',
+            'detail_page' => self::MENU_SLUG,
+            'detail_enqueue' => array($this, 'enqueueProductDetails'),
+            'surface_extension' => 'static-publishing',
+            'surface_enqueue' => array($this, 'enqueueProductDetails'),
+            'configuration_reset' => $this->publishingConfigurationReset(),
+            'surface_provider' => array($this, 'publishingSurface'),
+            'surface_save' => array($this, 'savePublishingSurface'),
+            'surface_action' => array($this, 'publishingSurfaceAction'),
+            'advanced_links' => array(
+                array('label' => __('Publishing jobs and logs', 'smartcloud-static-publisher'), 'url' => admin_url('admin.php?page=' . self::MENU_SLUG . '&section=jobs'), 'required_capability' => 'manage_options'),
+                array('label' => __('Publisher configuration', 'smartcloud-static-publisher'), 'url' => admin_url('admin.php?page=' . self::MENU_SLUG . '&section=configuration'), 'required_capability' => 'manage_options'),
+                array('label' => __('Publishing audit', 'smartcloud-static-publisher'), 'url' => admin_url('admin.php?page=' . self::MENU_SLUG . '&section=audit'), 'required_capability' => 'manage_options'),
+                array('label' => __('Publishing schedule', 'smartcloud-static-publisher'), 'url' => admin_url('admin.php?page=' . self::MENU_SLUG . '&section=scheduler'), 'required_capability' => 'manage_options'),
+                array('label' => __('Additional deployment targets', 'smartcloud-static-publisher'), 'url' => admin_url('admin.php?page=' . self::MENU_SLUG . '&section=extraTargets'), 'required_capability' => 'manage_options'),
+                array('label' => __('Static Publisher Settings', 'smartcloud-static-publisher'), 'url' => admin_url('admin.php?page=' . self::MENU_SLUG), 'required_capability' => 'manage_options'),
+            ),
+            'quick_links' => array(
+            ),
+            'legacy_menu_slugs' => array(self::MENU_SLUG),
+        );
+        return $capabilities;
     }
 
     public function addMenu(): void
@@ -72,9 +116,17 @@ class Admin
         echo '<div id="smartcloud-static-publisher-admin"></div>';
     }
 
+    /** Reuse the native bundle when the hub renders this plugin inline. */
+    public function enqueueProductDetails(): void
+    {
+        $this->enqueueAssets($this->adminPageHook);
+    }
+
     public function enqueueAssets(string $hook): void
     {
-        if ($hook !== $this->adminPageHook) {
+        // A unified product page requests both its summary extension and its
+        // detailed application. They share one bundle and one bootstrap.
+        if ($hook !== $this->adminPageHook || $this->assetsEnqueued) {
             return;
         }
 
@@ -149,7 +201,8 @@ class Admin
             ),
         );
 
-        $inline = 'const __staticPublisherGlobal = (typeof globalThis !== "undefined") ? globalThis : window;
+        $inline = '(function () {
+const __staticPublisherGlobal = (typeof globalThis !== "undefined") ? globalThis : window;
 __staticPublisherGlobal.WpSuite = __staticPublisherGlobal.WpSuite ?? {};
 __staticPublisherGlobal.WpSuite.plugins = __staticPublisherGlobal.WpSuite.plugins ?? {};
 __staticPublisherGlobal.WpSuite.events = __staticPublisherGlobal.WpSuite.events ?? {
@@ -157,10 +210,12 @@ __staticPublisherGlobal.WpSuite.events = __staticPublisherGlobal.WpSuite.events 
   on: (type, cb, opts) => window.addEventListener(type, cb, opts),
 };
 __staticPublisherGlobal.WpSuite.plugins.staticPublisher = __staticPublisherGlobal.WpSuite.plugins.staticPublisher ?? {};
-Object.assign(__staticPublisherGlobal.WpSuite.plugins.staticPublisher, ' . wp_json_encode($bootstrap) . ');
-var WpSuite = __staticPublisherGlobal.WpSuite;';
+Object.assign(__staticPublisherGlobal.WpSuite.plugins.staticPublisher, ' . wp_json_encode($bootstrap, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ');
+})();
+var WpSuite = (typeof globalThis !== "undefined" ? globalThis : window).WpSuite;';
 
         wp_add_inline_script($scriptHandle, $inline, 'before');
+        $this->assetsEnqueued = true;
     }
 
     public function registerRestRoutes(): void
@@ -377,6 +432,15 @@ var WpSuite = __staticPublisherGlobal.WpSuite;';
     }
 
     public function handleSaveConfig(WP_REST_Request $request): WP_REST_Response
+    {
+        try {
+            return $this->plugin->withQueueMutationLock(fn() => $this->saveConfigLocked($request));
+        } catch (\Throwable $error) {
+            return new WP_REST_Response(array('message' => __('Publishing configuration or queue is busy. Try again shortly.', 'smartcloud-static-publisher')), 409);
+        }
+    }
+
+    private function saveConfigLocked(WP_REST_Request $request): WP_REST_Response
     {
         $payload = $request->get_json_params();
         $data = is_array($payload) ? $payload : array();
