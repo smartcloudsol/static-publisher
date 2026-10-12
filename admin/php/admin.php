@@ -398,7 +398,8 @@ var WpSuite = (typeof globalThis !== "undefined" ? globalThis : window).WpSuite;
             }
             global $wpdb;
             $journalTable = $wpdb->base_prefix . 'smartcloud_static_publisher_content_events';
-            $journaledPostTypes = $wpdb->get_col("SELECT DISTINCT post_type FROM {$journalTable}");
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- This live administrative journal snapshot must include newly recorded post types.
+            $journaledPostTypes = $wpdb->get_col($wpdb->prepare('SELECT DISTINCT post_type FROM %i', $journalTable));
             foreach (is_array($journaledPostTypes) ? $journaledPostTypes : array() as $journaledPostType) {
                 $name = sanitize_key((string) $journaledPostType);
                 if ($name === '' || isset($itemsBySlug[$name])) {
@@ -605,7 +606,13 @@ var WpSuite = (typeof globalThis !== "undefined" ? globalThis : window).WpSuite;
             'deployPlan',
         ) as $pathKey) {
             $file = (string) ($paths[$pathKey] ?? '');
-            if ($file !== '' && is_file($file) && !unlink($file)) {
+            if ($file !== '' && is_file($file)) {
+                wp_delete_file($file);
+                clearstatcache(true, $file);
+                if (!is_file($file)) {
+                    continue;
+                }
+                // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Internal control-flow exception is caught without rendering this message; the REST handler returns its own JSON response.
                 throw new \RuntimeException(__('Content-sync state cleanup failed.', 'smartcloud-static-publisher'));
             }
         }

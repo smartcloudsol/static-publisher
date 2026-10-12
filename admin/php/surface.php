@@ -105,7 +105,7 @@ trait PublishingSurface
                 $config[$key] = $value;
             }
         }
-        if (empty($config['targetOrigin']) || ($config['targetOrigin'] !== '.' && (!filter_var($config['targetOrigin'], FILTER_VALIDATE_URL) || !in_array(strtolower((string) parse_url($config['targetOrigin'], PHP_URL_SCHEME)), array('http', 'https'), true))) || trim($config['s3']['bucket']) === '' || trim($config['s3']['region']) === '' || trim($config['outputDir']) === '' || !in_array($config['urlRewriteMode'], array('absolute', 'root-relative', 'relative'), true)) {
+        if (empty($config['targetOrigin']) || ($config['targetOrigin'] !== '.' && (!filter_var($config['targetOrigin'], FILTER_VALIDATE_URL) || !in_array(strtolower((string) wp_parse_url($config['targetOrigin'], PHP_URL_SCHEME)), array('http', 'https'), true))) || trim($config['s3']['bucket']) === '' || trim($config['s3']['region']) === '' || trim($config['outputDir']) === '' || !in_array($config['urlRewriteMode'], array('absolute', 'root-relative', 'relative'), true)) {
             return new \WP_Error('publisher_surface_invalid', __('Complete the target address, link format, output directory, bucket and region.', 'smartcloud-static-publisher'), array('status' => 400));
         }
         $request = new \WP_REST_Request('POST');

@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.1.0
+Stable tag: 1.1.1
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -514,6 +514,11 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.1.1 =
+* Compatibility: Bundle shared Hub 2.6.1 with correctly scoped PHP translations and literal configuration-reset messages; preserve existing reset and ownership safeguards.
+* PHP compatibility: Bind journal table identifiers, clarify translator placeholders, and preserve binary log cursors and atomic local runner-lock/reset behavior.
+* Documentation: Keep concise upgrade notices and preserve full historical guidance in the release archive.
+
 = 1.1.0 =
 * Improve shared navigation alignment, connection details, inline help and setup field guidance.
 * Fix publishing dialog and detailed settings initialization on the integrated product page.
@@ -666,7 +671,12 @@ Build steps and development notes are documented in the repository README.
 * Secure REST endpoints with capability and nonce checks.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
+Full operator guidance for older releases is preserved in [CHANGELOG-HISTORY.md](CHANGELOG-HISTORY.md).
+
 == Upgrade Notice ==
+
+= 1.1.1 =
+Updates the bundled shared Hub without changing publishing settings. Shadow-runtime asset discovery requires a separate exporter/workers 1.1.84 update and an affected-page recrawl; this plugin update does not deploy the external runner.
 
 = 1.1.0 =
 WP Suite admin navigation now groups everyday tasks by capability and detailed settings under Advanced. Existing settings and bookmarked admin URLs remain available; no configuration migration is required.
@@ -675,31 +685,31 @@ WP Suite admin navigation now groups everyday tasks by capability and detailed s
 Install @smart-cloud/publisher-exporter 1.1.83 on each queue-runner host and restart the runner after active jobs finish. Additional stylesheet URLs are optional; review their sources before adding them in WP Suite General Settings. Existing exports and queue configuration need no migration.
 
 = 1.0.26 =
-Install @smart-cloud/publisher-exporter 1.1.81 on the coordinator. Before selecting a delegated cross-account target, deploy the updated worker stack with its exact S3-only target role and external ID, then reinstall the generated remote-workers.json. Configure the queue-runner user's named AWS profile with the separate coordinator target role when local S3 or CloudFront calls need that identity.
+Install exporter 1.1.81. Cross-account targets need the updated worker stack, exact S3-only role/external ID and regenerated remote-workers.json. Configure the coordinator's named AWS profile separately. See CHANGELOG-HISTORY.md for full guidance.
 
 = 1.0.25 =
-Install @smart-cloud/publisher-exporter 1.1.74 and restart the external queue runner before enabling page-cache purge. Keep purge disabled until a server adapter implements the generic provider contract and a real source request proves MISS-to-HIT behavior without caching authentication redirects or logged-in HTML. The first incremental crawl after upgrading may render all supported pages once because the global token schema now includes the site revision and configured dependency hashes.
+Install exporter 1.1.74 and restart the runner. Keep page-cache purge disabled until the adapter proves safe MISS-to-HIT behavior. The first incremental crawl may render all supported pages. See CHANGELOG-HISTORY.md for full guidance.
 
 = 1.0.24 =
-After active jobs finish, install @smart-cloud/publisher-exporter 1.1.72 and restart every external coordinator queue runner. The saved-page counter fix applies to new jobs; it does not rewrite an active job's progress. Existing tested Lambda workers on 1.1.71 can remain in place because the 1.1.72 remote-worker bundle is byte-identical; no stack update or remote-workers.json replacement is needed solely for this counter fix. If upgrading older worker infrastructure, deploy workers with the 1.1.71 Chromium launch fix and install the regenerated remote-workers.json to enable direct DynamoDB intra-batch progress; older configs expose progress only after a batch completes. Render batching defaults to 5 URLs; review render, rewrite, and deploy batch sizes before increasing them. Republish targets produced by the earlier delegated rewrite implementation to replace incorrect S3 Content-Type metadata.
+Install exporter 1.1.72 after active jobs finish. Worker 1.1.71 remains valid for the counter fix; older workers need the launch/progress updates and regenerated config. Review batch sizes and republish earlier rewrite targets. See CHANGELOG-HISTORY.md.
 
 = 1.0.23 =
-Install @smart-cloud/publisher-exporter 1.1.65 and restart the external queue runner. Before enabling Lambda delegation, deploy the updated worker stack and install its new remote-workers.json containing functions.asset. Existing mixed local/remote settings remain unchanged until an administrator explicitly saves the unified delegation and concurrency controls.
+Install exporter 1.1.65 and restart the runner. Before Lambda delegation, deploy the updated worker stack and its remote-workers.json with functions.asset. Saved local/remote settings stay unchanged until an explicit save. See CHANGELOG-HISTORY.md.
 
 = 1.0.22 =
-Install @smart-cloud/publisher-exporter 1.1.63 and restart the external queue runner so it writes the safe target/rule discovery snapshot, then restart or refresh Agent Composer MCP tool discovery after updating both plugins. The scheduling response now returns a job_id used by the read-only job-status tool. Before queueing a standard content-sync job, complete one successful normal publish so the selected rule and target pair has a ready baseline.
+Install exporter 1.1.63, restart the runner and refresh Composer MCP discovery. Scheduling returns job_id for read-only status. Complete a normal publish before standard content-sync jobs to establish the target/rule baseline. See CHANGELOG-HISTORY.md.
 
 = 1.0.21 =
-Install @smart-cloud/publisher-exporter 1.1.62 on every runner host. Before enabling Lambda rendering, rewriting, or deployment, redeploy the CDK stack and copy its newly generated remote-workers.json to the site's Static Publisher runtime directory; existing files without deployment targets are insufficient for delegated deploys. Remove obsolete PUBLISHER_REMOTE_* variables from cron. Run a crawl or publish to populate Consent candidates, and run one normal publish before relying on targeted plugin-resource updates.
+Install exporter 1.1.62 on every host. Lambda delegation requires updated worker CDK and regenerated remote-workers.json. Remove obsolete PUBLISHER_REMOTE_* cron variables; crawl for Consent candidates and publish for targeted sync. See CHANGELOG-HISTORY.md.
 
 = 1.0.20 =
-AI Kit public release gating requires @smart-cloud/publisher-exporter 1.1.54. Install that exporter on the runner host, let the scheduler evaluate the saved content-sync rules, then complete one successful publish before enabling or expecting gated Knowledge Sync delivery. Existing Static Publisher workflows do not require AI Kit or this opt-in gate.
+AI Kit release gating needs exporter 1.1.54: install it, let the scheduler evaluate saved content-sync rules, then publish successfully before expecting gated Knowledge Sync. This optional gate is not required for normal publishing. See CHANGELOG-HISTORY.md.
 
 = 1.0.19 =
 Install @smart-cloud/publisher-exporter 1.1.52 on every runner host, then complete one normal full or incremental publish to establish the new release baseline before resuming targeted content sync.
 
 = 1.0.16 =
-Sites with theme-specific taxonomy archives must install the matching theme routing integration, then run one successful normal full or incremental publish to establish the new release baseline. Existing content-sync retries retain their original impact plan; the successful normal publish supersedes it safely.
+Theme-specific taxonomy archives need matching theme routing, then a normal full/incremental publish to establish the release baseline. Existing retries keep their impact plans and are safely superseded by that publish. See CHANGELOG-HISTORY.md.
 
 = 1.0.15 =
 Review content-sync rules and add Page where needed; remove Media if previously selected. Save PRO Scheduler Settings, then run one successful normal full or incremental publish to establish a baseline for the updated release and scope. Previously overwritten rules must be re-entered.
@@ -711,7 +721,7 @@ Recommended for sites running AI Kit or other Composer ability providers alongsi
 Recommended for sites using targeted content sync. Run one successful normal full or incremental publish after upgrading to establish the new release baseline and populate trusted Media Library asset tokens.
 
 = 1.0.12 =
-Recommended for incremental exports containing Query Loops or paginated archives and for Professional or Agency sites using targeted content sync. Run one successful normal publish after upgrading to establish the required baseline. Multisite subsite tracking is opt-in and requires network activation.
+Recommended for Query Loops/paginated archives and targeted content sync. Complete a normal publish to establish the baseline. Multisite subsite tracking is opt-in and requires network activation. See CHANGELOG-HISTORY.md.
 
 = 1.0.11 =
 Declares compatibility with WordPress 7.1.

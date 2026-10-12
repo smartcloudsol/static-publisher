@@ -13,6 +13,7 @@ namespace {
     function wp_mkdir_p($path) { return is_dir($path) || mkdir($path, 0700, true); }
     function wp_json_encode($value) { return json_encode($value); }
     function wp_generate_uuid4() { return bin2hex(random_bytes(16)); }
+    function wp_delete_file($path) { $GLOBALS['deleted_files'][] = $path; if (empty($GLOBALS['skip_delete'])) unlink($path); }
     function is_wp_error($value) { return $value instanceof WP_Error; }
     class WP_Error { public function __construct(public $code, public $message, public $data) {} }
     require dirname(__DIR__) . '/admin/php/configuration-reset.php';
@@ -29,6 +30,10 @@ namespace {
         public function withQueueMutationLock($callback) { $this->locked = true; try { return $callback(); } finally { $this->locked = false; } }
         public function readQueue() {
             if (!$this->locked) throw new RuntimeException('Queue read without WP lock.');
+            foreach (array('export.lock', 'queue-mutation.lock') as $name) {
+                clearstatcache(true, $this->root.'/'.$name);
+                if ((fileperms($this->root.'/'.$name) & 0777) !== 0600) throw new RuntimeException('Administrative runner locks require mode 0600.');
+            }
             $lock = json_decode(file_get_contents($this->root.'/export.lock'), true);
             if (!array_key_exists('pid', $lock) || $lock['pid'] !== null || empty($lock['startedAt']) || $lock['operation'] !== 'configuration-reset') throw new RuntimeException('Runner wrapper must not mistake an administrative lock for a stale non-runner PID.');
             return $this->jobs;
@@ -68,6 +73,15 @@ namespace {
         check(!file_exists($root.'/config.json') && !file_exists($root.'/remote-workers.json'), 'Old generated runner configuration cannot continue scheduling.');
         check(file_exists($root.'/last-run.json') && isset($GLOBALS['options']['smartcloud_static_publisher_audit_log'], $GLOBALS['options']['gatey'], $GLOBALS['options']['smartcloud-wpsuite/site-settings']), 'History, other plugins and site connection survive.');
         check(!file_exists($root.'/export.lock') && !file_exists($root.'/queue-mutation.lock'), 'Owned locks released.');
+        check(count($GLOBALS['deleted_files']) === 2, 'Only staged configuration backups use WordPress filtered deletion, never owned runner locks.');
+        $GLOBALS['options']['smartcloud_static_publisher_config'] = array('target'=>'retry');
+        $GLOBALS['options']['smartcloud_static_publisher_runtime_nonce'] = 'retry';
+        file_put_contents($root.'/config.json', '{"retry":true}');
+        $retryRevision = \SmartCloud\WPSuite\Hub\ConfigurationReset::revision($descriptor);
+        $GLOBALS['skip_delete'] = true;
+        check($fixture->resetPublishingConfiguration($retryRevision)->code === 'publisher_reset_failed', 'WordPress filtered deletion that leaves a backup is reported, not silently accepted.');
+        check(!file_exists($root.'/config.json') && count(glob($root.'/config.json.reset-*')) === 1, 'After options reset, undeleted backup stays staged and cannot revive stale runner configuration.');
+        check(!file_exists($root.'/export.lock') && !file_exists($root.'/queue-mutation.lock'), 'Cleanup failure still releases owned exact runner locks.');
         echo "Publisher configuration reset: $checks checks passed.\n";
     } finally { foreach (glob($root.'/*') as $path) unlink($path); rmdir($root); }
 }

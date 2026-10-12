@@ -8,6 +8,7 @@ namespace {
     function current_user_can($cap) { return $GLOBALS['allowed']; }
     function __($text, $domain = '') { return $text; }
     function wp_json_encode($value) { return json_encode($value); }
+    function wp_parse_url($value, $component = -1) { return parse_url($value, $component); }
     function get_option($key, $default = false) { return $GLOBALS['options'][$key] ?? $default; }
     function update_option($key, $value, $autoload = null) { $GLOBALS['options'][$key] = $value; return true; }
     function wp_mkdir_p($path) { return true; }

@@ -513,20 +513,21 @@ final class ContentChangeJournal
         $limit = min(250, max(1, (int) ($data['limit'] ?? 100)));
         $placeholders = implode(', ', array_fill(0, count($postTypes), '%s'));
         $where = "(post_type IN ({$placeholders}) OR operation = 'resource')";
-        $params = $postTypes;
+        $params = array_merge(array($this->tableName()), $postTypes);
         if (!$includeSubsites) {
             $where .= ' AND blog_id = %d';
             $params[] = get_current_blog_id();
         }
         $params = array_merge($params, array($afterSequence, $throughSequence, $limit));
-        $sql = $wpdb->prepare(
+        // Only generated %s placeholders and the fixed blog-scope clause vary;
+        // every identifier and value remains a separate prepare argument.
+        $rows = $wpdb->get_results($wpdb->prepare(
             "SELECT sequence, blog_id, recorded_gmt, post_id, post_type, operation, before_projection, after_projection, correlation_id
-             FROM {$this->tableName()}
+             FROM %i
              WHERE {$where} AND sequence > %d AND sequence <= %d
              ORDER BY sequence ASC LIMIT %d",
             $params
-        );
-        $rows = $wpdb->get_results($sql, ARRAY_A);
+        ), ARRAY_A);
         $items = array_map(array($this, 'hydrateEventRow'), is_array($rows) ? $rows : array());
         $nextSequence = !empty($items) ? (int) end($items)['sequence'] : $afterSequence;
 

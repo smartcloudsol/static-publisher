@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.1.0
+ * Version:           1.1.1
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 
 final class Plugin
 {
@@ -871,7 +871,9 @@ final class Plugin
                 'next_attempt_at' => $nextAttemptAt,
                 'error' => $this->sanitizeJobStatusReason((string) ($queued['error'] ?? '')),
                 'message' => $status === 'retry-wait'
+                    /* translators: %d: Number of jobs ahead of this job in the publishing queue. */
                     ? sprintf(__('Job is waiting for retry; %d job(s) are ahead of it.', 'smartcloud-static-publisher'), $jobsAhead)
+                    /* translators: %d: Number of jobs ahead of this job in the publishing queue. */
                     : sprintf(__('Job is queued; %d job(s) are ahead of it.', 'smartcloud-static-publisher'), $jobsAhead),
             );
         }
@@ -981,6 +983,7 @@ final class Plugin
             'next_attempt_at' => '',
             'error' => '',
             'message' => sprintf(
+                /* translators: %s: UTC timestamp of the job's most recent audit event. */
                 __('The job is no longer active and no retained terminal outcome was found. Its latest audit event was recorded at %s.', 'smartcloud-static-publisher'),
                 sanitize_text_field((string) ($latest['occurredAt'] ?? ''))
             ),
@@ -1032,23 +1035,31 @@ final class Plugin
     {
         return match ($status) {
             'success' => $endedAt !== ''
+                /* translators: %s: UTC timestamp when the publishing job finished. */
                 ? sprintf(__('Job completed successfully at %s.', 'smartcloud-static-publisher'), $endedAt)
                 : __('Job completed successfully.', 'smartcloud-static-publisher'),
             'failed' => $endedAt !== '' && $error !== ''
+                /* translators: 1: UTC timestamp when the publishing job failed. 2: Recorded failure reason. */
                 ? sprintf(__('Job failed at %1$s: %2$s', 'smartcloud-static-publisher'), $endedAt, $error)
                 : ($error !== ''
+                    /* translators: %s: Recorded publishing job failure reason. */
                     ? sprintf(__('Job failed: %s', 'smartcloud-static-publisher'), $error)
                     : ($endedAt !== ''
+                        /* translators: %s: UTC timestamp when the publishing job failed. */
                         ? sprintf(__('Job failed at %s without a retained error message.', 'smartcloud-static-publisher'), $endedAt)
                         : __('Job failed without a retained error message.', 'smartcloud-static-publisher'))),
             'stopped' => $endedAt !== '' && $error !== ''
+                /* translators: 1: UTC timestamp when the publishing job stopped. 2: Recorded stop reason. */
                 ? sprintf(__('Job was stopped at %1$s: %2$s', 'smartcloud-static-publisher'), $endedAt, $error)
                 : ($error !== ''
+                    /* translators: %s: Recorded reason why the publishing job stopped. */
                     ? sprintf(__('Job was stopped: %s', 'smartcloud-static-publisher'), $error)
                     : ($endedAt !== ''
+                        /* translators: %s: UTC timestamp when the publishing job stopped. */
                         ? sprintf(__('Job was stopped at %s.', 'smartcloud-static-publisher'), $endedAt)
                         : __('Job was stopped before completion.', 'smartcloud-static-publisher'))),
             'cancelled' => $endedAt !== ''
+                /* translators: %s: UTC timestamp when the queued publishing job was removed. */
                 ? sprintf(__('Job was removed from the queue at %s before execution.', 'smartcloud-static-publisher'), $endedAt)
                 : __('Job was removed from the queue before execution.', 'smartcloud-static-publisher'),
             'retry-wait' => __('Job failed temporarily and is waiting for its scheduled retry.', 'smartcloud-static-publisher'),
@@ -4783,6 +4794,7 @@ final class Plugin
                     return;
                 }
 
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Local binary stream and byte offsets must share the Node runner's audit file, under the mutation lock.
                 $handle = @fopen($auditPath, 'rb');
                 if (!is_resource($handle)) {
                     return;
@@ -4793,6 +4805,7 @@ final class Plugin
                     }
                     $slice = stream_get_contents($handle);
                 } finally {
+                    // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the local binary audit stream opened above, including early returns.
                     fclose($handle);
                 }
                 if (!is_string($slice) || $slice === '') {
