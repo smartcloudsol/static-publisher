@@ -671,7 +671,7 @@ Build steps and development notes are documented in the repository README.
 * Secure REST endpoints with capability and nonce checks.
 * Playwright-based static export integration with S3 and CloudFront workflow.
 
-Full operator guidance for older releases is preserved in [CHANGELOG-HISTORY.md](CHANGELOG-HISTORY.md).
+Full operator guidance for older releases is preserved in the public [historical upgrade archive](https://github.com/smartcloudsol/static-publisher/blob/main/CHANGELOG-HISTORY.md).
 
 == Upgrade Notice ==
 
@@ -685,31 +685,31 @@ WP Suite admin navigation now groups everyday tasks by capability and detailed s
 Install @smart-cloud/publisher-exporter 1.1.83 on each queue-runner host and restart the runner after active jobs finish. Additional stylesheet URLs are optional; review their sources before adding them in WP Suite General Settings. Existing exports and queue configuration need no migration.
 
 = 1.0.26 =
-Install exporter 1.1.81. Cross-account targets need the updated worker stack, exact S3-only role/external ID and regenerated remote-workers.json. Configure the coordinator's named AWS profile separately. See CHANGELOG-HISTORY.md for full guidance.
+Install exporter 1.1.81. Cross-account targets need the updated worker stack, exact S3-only role/external ID and regenerated remote-workers.json. Configure the coordinator's named AWS profile separately. See the linked historical upgrade archive.
 
 = 1.0.25 =
-Install exporter 1.1.74 and restart the runner. Keep page-cache purge disabled until the adapter proves safe MISS-to-HIT behavior. The first incremental crawl may render all supported pages. See CHANGELOG-HISTORY.md for full guidance.
+Install exporter 1.1.74 and restart the runner. Keep page-cache purge disabled until the adapter proves safe MISS-to-HIT behavior. The first incremental crawl may render all supported pages. See the linked historical upgrade archive.
 
 = 1.0.24 =
-Install exporter 1.1.72 after active jobs finish. Worker 1.1.71 remains valid for the counter fix; older workers need the launch/progress updates and regenerated config. Review batch sizes and republish earlier rewrite targets. See CHANGELOG-HISTORY.md.
+Install exporter 1.1.72 after active jobs finish. Worker 1.1.71 remains valid for the counter fix; older workers need the launch/progress updates and regenerated config. Review batch sizes and republish earlier rewrite targets. See the linked historical upgrade archive.
 
 = 1.0.23 =
-Install exporter 1.1.65 and restart the runner. Before Lambda delegation, deploy the updated worker stack and its remote-workers.json with functions.asset. Saved local/remote settings stay unchanged until an explicit save. See CHANGELOG-HISTORY.md.
+Install exporter 1.1.65 and restart the runner. Before Lambda delegation, deploy the updated worker stack and its remote-workers.json with functions.asset. Saved local/remote settings stay unchanged until an explicit save. See the linked historical upgrade archive.
 
 = 1.0.22 =
-Install exporter 1.1.63, restart the runner and refresh Composer MCP discovery. Scheduling returns job_id for read-only status. Complete a normal publish before standard content-sync jobs to establish the target/rule baseline. See CHANGELOG-HISTORY.md.
+Install exporter 1.1.63, restart the runner and refresh Composer MCP discovery. Scheduling returns job_id for read-only status. Complete a normal publish before standard content-sync jobs to establish the target/rule baseline. See the linked historical upgrade archive.
 
 = 1.0.21 =
-Install exporter 1.1.62 on every host. Lambda delegation requires updated worker CDK and regenerated remote-workers.json. Remove obsolete PUBLISHER_REMOTE_* cron variables; crawl for Consent candidates and publish for targeted sync. See CHANGELOG-HISTORY.md.
+Install exporter 1.1.62 on every host. Lambda delegation requires updated worker CDK and regenerated remote-workers.json. Remove obsolete PUBLISHER_REMOTE_* cron variables; crawl for Consent candidates and publish for targeted sync. See the linked historical upgrade archive.
 
 = 1.0.20 =
-AI Kit release gating needs exporter 1.1.54: install it, let the scheduler evaluate saved content-sync rules, then publish successfully before expecting gated Knowledge Sync. This optional gate is not required for normal publishing. See CHANGELOG-HISTORY.md.
+AI Kit release gating needs exporter 1.1.54: install it, let the scheduler evaluate saved content-sync rules, then publish successfully before expecting gated Knowledge Sync. This optional gate is not required for normal publishing. See the linked historical upgrade archive.
 
 = 1.0.19 =
 Install @smart-cloud/publisher-exporter 1.1.52 on every runner host, then complete one normal full or incremental publish to establish the new release baseline before resuming targeted content sync.
 
 = 1.0.16 =
-Theme-specific taxonomy archives need matching theme routing, then a normal full/incremental publish to establish the release baseline. Existing retries keep their impact plans and are safely superseded by that publish. See CHANGELOG-HISTORY.md.
+Theme-specific taxonomy archives need matching theme routing, then a normal full/incremental publish to establish the release baseline. Existing retries keep their impact plans and are safely superseded by that publish. See the linked historical upgrade archive.
 
 = 1.0.15 =
 Review content-sync rules and add Page where needed; remove Media if previously selected. Save PRO Scheduler Settings, then run one successful normal full or incremental publish to establish a baseline for the updated release and scope. Previously overwritten rules must be re-entered.
@@ -721,7 +721,7 @@ Recommended for sites running AI Kit or other Composer ability providers alongsi
 Recommended for sites using targeted content sync. Run one successful normal full or incremental publish after upgrading to establish the new release baseline and populate trusted Media Library asset tokens.
 
 = 1.0.12 =
-Recommended for Query Loops/paginated archives and targeted content sync. Complete a normal publish to establish the baseline. Multisite subsite tracking is opt-in and requires network activation. See CHANGELOG-HISTORY.md.
+Recommended for Query Loops/paginated archives and targeted content sync. Complete a normal publish to establish the baseline. Multisite subsite tracking is opt-in and requires network activation. See the linked historical upgrade archive.
 
 = 1.0.11 =
 Declares compatibility with WordPress 7.1.

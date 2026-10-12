@@ -45,6 +45,11 @@ namespace {
         check(str_contains($source, "fopen(\$auditPath, 'rb')") && str_contains($source, 'fseek($handle, $offset)'), 'Audit ingestion keeps binary byte-addressed local reads.');
         $readme = file_get_contents(dirname(__DIR__) . '/readme.txt');
         $notices = explode('== Upgrade Notice ==', $readme, 2)[1];
+        $archiveUrl = 'https://github.com/smartcloudsol/static-publisher/blob/main/CHANGELOG-HISTORY.md';
+        check(substr_count($readme, $archiveUrl) === 1, 'The full historical guide has one explicit public GitHub archive link.');
+        check(strpos($readme, $archiveUrl) < strpos($readme, '== Upgrade Notice =='), 'The discoverable archive link lives outside the length-limited upgrade notice bodies.');
+        check(!str_contains($readme, '](CHANGELOG-HISTORY.md)') && !str_contains($notices, 'CHANGELOG-HISTORY.md'), 'Installed readme guidance does not depend on an archive file inside the plugin ZIP.');
+        check(substr_count($notices, 'See the linked historical upgrade archive.') === 9, 'Every shortened historical notice points naturally to the shared external archive link.');
         preg_match_all('/= ([\d.]+) =\s*([^=]*)(?=\n= [\d.]+ =|$)/', $notices, $matches, PREG_SET_ORDER);
         foreach ($matches as $match) check(strlen(trim($match[2])) <= 300, 'Upgrade notice ' . $match[1] . ' fits the WordPress.org limit.');
         $history = file_get_contents(dirname(__DIR__) . '/CHANGELOG-HISTORY.md');
