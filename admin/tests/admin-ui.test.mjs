@@ -389,6 +389,13 @@ async function openFixture(
   return { page, errors, getSavedConfig: () => savedConfig, queuedJobs };
 }
 
+// Finish intercepted callbacks before disposing their page; otherwise a polling
+// request can evaluate fixture state after page.close() and reject after the test.
+async function closeFixture(page) {
+  await page.unrouteAll({ behavior: "wait" });
+  await page.close();
+}
+
 async function choose(page, label, value) {
   await page.getByRole("textbox", { name: new RegExp(`^${label}`) }).click();
   await page.getByRole("option", { name: value, exact: true }).click();
@@ -418,7 +425,7 @@ try {
         assert.deepEqual(queuedJobs, [{ command: "publish", crawlMode: "full" }]);
         assert.equal(getSavedConfig(), null, "Launching does not write saved configuration");
         assert.deepEqual(errors, []);
-      } finally { await page.close(); }
+      } finally { await closeFixture(page); }
     });
   }
   await test("Compact publishing dialog disables unpaid tasks and cancellation never queues", async () => {
@@ -435,7 +442,7 @@ try {
       await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
       assert.deepEqual(queuedJobs, []);
       assert.deepEqual(errors, []);
-    } finally { await page.close(); }
+    } finally { await closeFixture(page); }
   });
   await test("Compact publishing dialog preserves task and displays canonical queue errors", async () => {
     const { page, queuedJobs } = await openFixture({ width: 1280, height: 1000 }, false, null, null, null, null, { rejectJobs: true });
@@ -450,7 +457,7 @@ try {
       await dialog.getByRole("alert").filter({ hasText: "Runner baseline needs refresh." }).waitFor();
       assert.deepEqual(queuedJobs, [{ command: "url", url: "/selected-page/" }]);
       assert.equal(await dialog.getByRole("textbox", { name: "URL path", exact: true }).inputValue(), "/selected-page/");
-    } finally { await page.close(); }
+    } finally { await closeFixture(page); }
   });
 
   await test("Compact content sync uses the selected saved target and exact enabled rule", async () => {
@@ -474,7 +481,7 @@ try {
       await dialog.getByRole("button", { name: "Queue publishing job", exact: true }).click();
       await dialog.waitFor({ state: "hidden" });
       assert.deepEqual(queuedJobs, [{ command: "content-sync", deploymentProfile: "staging", contentSyncRuleId: "staging-sync" }]);
-    } finally { await page.close(); }
+    } finally { await closeFixture(page); }
   });
 
   await test("Launch refreshes canonical setup after onboarding without overwriting a detailed draft", async () => {
@@ -503,7 +510,7 @@ try {
       await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
       assert.equal(getSavedConfig(), null);
       assert.deepEqual(queuedJobs, []);
-    } finally { release?.(); await page.close(); }
+    } finally { release?.(); await closeFixture(page); }
   });
   await test("Failed launch refresh cannot queue from a stale saved snapshot", async () => {
     const { page, queuedJobs } = await openFixture({ width: 1280, height: 1000 }, false);
@@ -514,7 +521,7 @@ try {
       await dialog.getByRole("alert").filter({ hasText: "Current publishing settings are unavailable." }).waitFor();
       assert.equal(await dialog.getByRole("button", { name: "Queue publishing job", exact: true }).isDisabled(), true);
       assert.deepEqual(queuedJobs, []);
-    } finally { await page.close(); }
+    } finally { await closeFixture(page); }
   });
 
   await test("Publisher menu navigation updates section, preserves query/hash and supports Back/Forward", async () => {
@@ -538,7 +545,7 @@ try {
       await page.reload();
       await page.locator(".mantine-NavLink-root[data-active]").filter({ hasText: "Configuration" }).waitFor();
       assert.deepEqual(errors, []);
-    } finally { await page.close(); }
+    } finally { await closeFixture(page); }
   });
   for (const [section, expectedSection] of [
     ["jobs", "Jobs"], ["configuration", "Configuration"],
@@ -550,7 +557,7 @@ try {
       try {
         assert.equal(await page.locator(".mantine-NavLink-root[data-active]").innerText(), expectedSection);
         assert.deepEqual(errors, []);
-      } finally { await page.close(); }
+      } finally { await closeFixture(page); }
     });
   }
   for (const [search, hasSavedConfig, expectedSection] of [
@@ -562,7 +569,7 @@ try {
       try {
         assert.equal(await page.locator(".mantine-NavLink-root[data-active]").innerText(), expectedSection);
         assert.deepEqual(errors, []);
-      } finally { await page.close(); }
+      } finally { await closeFixture(page); }
     });
   }
   for (const [name, viewport] of [
@@ -635,7 +642,7 @@ try {
         );
         assert.deepEqual(errors, []);
       } finally {
-        await page.close();
+        await closeFixture(page);
       }
     });
   }
@@ -692,7 +699,7 @@ try {
       await invalidation;
       assert.deepEqual(errors, []);
     } finally {
-      await page.close();
+      await closeFixture(page);
     }
   });
 
@@ -874,7 +881,7 @@ try {
       assert.equal(saved.remoteWorkers.deploy.maxAttempts, 5);
       assert.deepEqual(errors, []);
     } finally {
-      await page.close();
+      await closeFixture(page);
     }
   });
 
@@ -916,7 +923,7 @@ try {
       );
       assert.deepEqual(errors, []);
     } finally {
-      await page.close();
+      await closeFixture(page);
     }
   });
 
@@ -946,7 +953,7 @@ try {
       );
       assert.deepEqual(errors, []);
     } finally {
-      await page.close();
+      await closeFixture(page);
     }
   });
 
@@ -986,7 +993,7 @@ try {
       );
       assert.deepEqual(errors, []);
     } finally {
-      await page.close();
+      await closeFixture(page);
     }
   });
 
@@ -1070,7 +1077,7 @@ try {
         );
         assert.deepEqual(errors, []);
       } finally {
-        await page.close();
+        await closeFixture(page);
       }
     });
   }
@@ -1188,7 +1195,7 @@ try {
           );
           assert.deepEqual(errors, []);
         } finally {
-          await page.close();
+          await closeFixture(page);
         }
       });
     }

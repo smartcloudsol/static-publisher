@@ -2,6 +2,8 @@
 
 namespace SmartCloud\WPSuite\StaticPublisher\Admin;
 
+require_once dirname(__DIR__, basename(__DIR__) === 'php' ? 2 : 1) . '/includes/class-backend-profile.php';
+
 use SmartCloud\WPSuite\Hub\ConfigurationReset;
 
 /** Reset configuration only; publishing output, queues and audit history are never deleted. */
@@ -10,7 +12,7 @@ trait PublishingConfigurationReset
     public function publishingConfigurationReset(): array
     {
         return array(
-            'options' => array('smartcloud_static_publisher_config', 'smartcloud_static_publisher_runtime_nonce'),
+            'options' => array(\SmartCloud\WPSuite\StaticPublisher\BackendProfile::optionName('smartcloud_static_publisher_config'), \SmartCloud\WPSuite\StaticPublisher\BackendProfile::optionName('smartcloud_static_publisher_runtime_nonce')),
             'title' => __('Reset all Static Publishing configuration?', 'smartcloud-static-publisher'),
             'consequences' => array(
                 __('All publishing settings saved in WordPress will be removed, including destinations, export settings, remote worker settings and advanced options.', 'smartcloud-static-publisher'),

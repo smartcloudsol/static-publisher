@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.1.1
+ * Version:           1.2.0
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,8 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.1.1';
+const VERSION = '1.2.0';
+require_once __DIR__ . '/includes/class-backend-profile.php';
 
 final class Plugin
 {
@@ -66,6 +67,8 @@ final class Plugin
         $this->defineConstants();
         $this->includes();
         $this->registerConfiguredChangeTokenHooks();
+        add_filter('smartcloud_wpsuite_backend_profile_activation_check', array(BackendProfile::class, 'activationCheck'), 10, 3);
+        add_filter('smartcloud_wpsuite_backend_profile_initialization_check', array(BackendProfile::class, 'initializationCheck'), 10, 2);
 
         if ($this->admin instanceof Admin) {
             $this->admin->registerHooks();
@@ -116,6 +119,8 @@ final class Plugin
 
     private function includes(): void
     {
+        require_once SMARTCLOUD_STATIC_PUBLISHER_PATH . 'includes/class-backend-profile.php';
+
         if (file_exists(SMARTCLOUD_STATIC_PUBLISHER_PATH . 'hub-loader.php')) {
             require_once SMARTCLOUD_STATIC_PUBLISHER_PATH . 'hub-loader.php';
         }
@@ -292,7 +297,7 @@ final class Plugin
 
     public function getConfig(): array
     {
-        $stored = get_option(self::OPTION_KEY);
+        $stored = get_option(BackendProfile::optionName(self::OPTION_KEY));
         if (!is_array($stored)) {
             $stored = array();
         }
@@ -330,7 +335,7 @@ final class Plugin
                 'updatedAt' => gmdate('c'),
                 'reason' => sanitize_text_field($reason),
             );
-            update_option(self::OPTION_CHANGE_TOKEN_REVISION_KEY, $next, false);
+            update_option(BackendProfile::optionName(self::OPTION_CHANGE_TOKEN_REVISION_KEY), $next, false);
             $this->changeTokenRevisionBumpedThisRequest = true;
             return $next;
         } finally {
@@ -340,7 +345,7 @@ final class Plugin
 
     public function getChangeTokenRevision(): array
     {
-        $stored = get_option(self::OPTION_CHANGE_TOKEN_REVISION_KEY, array());
+        $stored = get_option(BackendProfile::optionName(self::OPTION_CHANGE_TOKEN_REVISION_KEY), array());
         if (!is_array($stored)) {
             $stored = array();
         }
@@ -676,7 +681,10 @@ final class Plugin
 
         $paths = $this->getRuntimePaths();
         wp_mkdir_p($paths['runtime']);
-        $this->writeJsonFile($paths['config'], $this->buildRuntimeConfig($this->getConfig()));
+        $runtimeConfig = $this->buildRuntimeConfig($this->getConfig());
+        BackendProfile::assertTarget($runtimeConfig);
+        BackendProfile::assertRunnerReady();
+        $this->writeJsonFile($paths['config'], $runtimeConfig);
 
         $contentSyncContext = null;
         if ($command === 'content-sync') {
@@ -707,6 +715,10 @@ final class Plugin
             'createdAt' => gmdate('c'),
             'createdBy' => max(0, $userId),
         );
+        if (isset($runtimeConfig['backendProfile'])) {
+            $job['backendProfile'] = $runtimeConfig['backendProfile'];
+            $job['runtimeConfigSnapshot'] = $runtimeConfig;
+        }
         if (in_array($command, array('publish', 'crawl'), true)) {
             $job['crawlMode'] = $crawlMode;
         }
@@ -1218,6 +1230,10 @@ final class Plugin
         if (!is_array($job)) {
             return $job;
         }
+        unset($job['runtimeConfigSnapshot']);
+        if (isset($job['backendProfile']) && is_array($job['backendProfile'])) {
+            $job['backendProfile'] = array_intersect_key($job['backendProfile'], array_flip(array('id', 'bindingRevision', 'generation')));
+        }
         if (isset($job['awsTempCreds'])) {
             unset($job['awsTempCreds']);
             $job['usesTempAwsCreds'] = true;
@@ -1422,6 +1438,7 @@ final class Plugin
     {
         $stripped = $config;
         unset($stripped['wpsuite']);
+        unset($stripped['backendProfile']);
         unset($stripped['deploymentTargetOverride']);
         return $stripped;
     }
@@ -1434,6 +1451,7 @@ final class Plugin
         unset($stripped['defaultDeploymentProfile']);
         unset($stripped['deploymentProfiles']);
         unset($stripped['wpsuite']);
+        unset($stripped['backendProfile']);
         unset($stripped['changeTokenDependencies']);
         return $stripped;
     }
@@ -1442,6 +1460,8 @@ final class Plugin
     {
         $runtime = $this->stripLocalOnlyConfigFromRuntimeConfig($config);
         $runtime['wpsuite'] = $this->getWpSuiteRuntimeConfig();
+        $profile = BackendProfile::runtimeMetadata();
+        if ($profile !== null) $runtime['backendProfile'] = $profile;
 
         $override = $this->sanitizeDeploymentProfileName($deploymentTargetOverride);
         if ($override !== '') {
@@ -1468,6 +1488,10 @@ final class Plugin
             $raw = array();
         }
 
+        $raw = function_exists('apply_filters') ? apply_filters('smartcloud_wpsuite_site_settings', $raw) : $raw;
+        if (is_object($raw)) $raw = get_object_vars($raw);
+        if (!is_array($raw)) throw new \RuntimeException('Publishing site connection is unavailable.');
+
         return array(
             'accountId' => sanitize_text_field((string) ($raw['accountId'] ?? '')),
             'siteId' => sanitize_text_field((string) ($raw['siteId'] ?? '')),
@@ -1480,6 +1504,8 @@ final class Plugin
     private function getWpSuiteVirtualAssetBaseUrl(): string
     {
         $assetPath = 'smartcloud-wpsuiteio';
+        $profile = BackendProfile::context();
+        if ($profile) return (string) apply_filters('smartcloud_wpsuite_virtual_asset_base_url', home_url('/' . $assetPath . '/profile/' . $profile['id'] . '/' . $profile['bindingRevision'] . '/'));
 
         if ((string) get_option('permalink_structure', '') !== '') {
             return trailingslashit(home_url('/' . $assetPath));
@@ -1499,14 +1525,14 @@ final class Plugin
 
     public function getRuntimeNonce(): string
     {
-        $existing = get_option(self::OPTION_RUNTIME_NONCE_KEY, '');
+        $existing = get_option(BackendProfile::optionName(self::OPTION_RUNTIME_NONCE_KEY), '');
         $nonce = is_string($existing) ? sanitize_text_field($existing) : '';
         if ($nonce !== '') {
             return $nonce;
         }
 
         $nonce = $this->generateRuntimeNonce();
-        update_option(self::OPTION_RUNTIME_NONCE_KEY, $nonce, false);
+        update_option(BackendProfile::optionName(self::OPTION_RUNTIME_NONCE_KEY), $nonce, false);
         return $nonce;
     }
 
@@ -1529,11 +1555,40 @@ final class Plugin
 
     private function getWpSuiteApiBase(): string
     {
-        $siteUrl = (string) get_site_url();
-        if (strpos($siteUrl, 'dev.wpsuite.io') !== false) {
-            return 'https://api.wpsuite.io/dev';
+        $raw = get_option('smartcloud-wpsuite/site-settings');
+        if ($raw === false) $raw = get_option('hub-for-wpsuiteio/site-settings');
+        $raw = function_exists('apply_filters') ? apply_filters('smartcloud_wpsuite_site_settings', $raw) : $raw;
+        if (is_object($raw)) $raw = get_object_vars($raw);
+        if (!is_array($raw)) $raw = array();
+        $profile = BackendProfile::context();
+        if ($profile && $profile['id'] === 'production' && ($raw['workspaceApiMode'] ?? 'legacy') === 'legacy') return 'https://api.wpsuite.io';
+        $mode = $raw['workspaceApiMode'] ?? 'legacy';
+        if (!in_array($mode, array('legacy', 'workspace'), true)) {
+            throw new \InvalidArgumentException('Unsupported workspace API mode.');
         }
-        return 'https://api.wpsuite.io';
+        $explicit = $mode === 'workspace'
+            || (array_key_exists('platformApiBaseUrl', $raw) && $raw['platformApiBaseUrl'] !== '')
+            || (array_key_exists('platformConfigUrl', $raw) && $raw['platformConfigUrl'] !== '');
+        if ($explicit) {
+            // Reuse the shipped Hub's paired HTTPS URL and identity validation.
+            // A broken explicit connection must never choose another backend.
+            if (!class_exists(\SmartCloud\WPSuite\Hub\SiteSettings::class)) {
+                // Activation can run before the Hub loader hooks in a standalone install.
+                $model = __DIR__ . '/smartcloud-wpsuite/model.php';
+                if (is_file($model) && !is_link($model)) require_once $model;
+            }
+            if (!class_exists(\SmartCloud\WPSuite\Hub\SiteSettings::class)) {
+                throw new \RuntimeException('The WP Suite connection validator is unavailable.');
+            }
+            $binding = \SmartCloud\WPSuite\Hub\SiteSettings::fromArray($raw);
+            if ($binding->platformApiBaseUrl === '') {
+                throw new \InvalidArgumentException('Explicit platform connection requires API and configuration URLs.');
+            }
+            return $binding->platformApiBaseUrl;
+        }
+        return strtolower((string) parse_url(get_site_url(), PHP_URL_HOST)) === 'dev.wpsuite.io'
+            ? 'https://api-dev.wpsuite.io'
+            : 'https://api.wpsuite.io';
     }
 
     public function getWpSuiteIdentityForJobs(): array
@@ -4724,7 +4779,7 @@ final class Plugin
     public function getRuntimePaths(): array
     {
         $upload = wp_get_upload_dir();
-        $storageRoot = trailingslashit($upload['basedir']) . 'smartcloud-static-publisher';
+        $storageRoot = trailingslashit($upload['basedir']) . 'smartcloud-static-publisher' . BackendProfile::storageSuffix();
         $runtime = trailingslashit($storageRoot) . 'runtime';
         $config = $this->getConfig();
         $logsRelative = $this->normalizeStorageRelativePath((string) ($config['logDir'] ?? 'logs'), 'logs');
@@ -4773,7 +4828,7 @@ final class Plugin
             return;
         }
 
-        $knownOffset = absint(get_option(self::OPTION_AUDIT_CURSOR_KEY, 0));
+        $knownOffset = absint(get_option(BackendProfile::optionName(self::OPTION_AUDIT_CURSOR_KEY), 0));
         if ($knownOffset === $size) {
             return;
         }
@@ -4786,7 +4841,7 @@ final class Plugin
                     return;
                 }
 
-                $offset = absint(get_option(self::OPTION_AUDIT_CURSOR_KEY, 0));
+                $offset = absint(get_option(BackendProfile::optionName(self::OPTION_AUDIT_CURSOR_KEY), 0));
                 if ($offset > $currentSize) {
                     $offset = 0;
                 }
@@ -4843,9 +4898,9 @@ final class Plugin
                 if (!empty($cleanEvents)) {
                     $entries = $this->getAuditLogEntries();
                     $entries = array_merge(array_reverse($cleanEvents), $entries);
-                    update_option(self::OPTION_AUDIT_LOG_KEY, array_slice($entries, 0, 2000), false);
+                    update_option(BackendProfile::optionName(self::OPTION_AUDIT_LOG_KEY), array_slice($entries, 0, 2000), false);
                 }
-                update_option(self::OPTION_AUDIT_CURSOR_KEY, $offset + strlen($complete), false);
+                update_option(BackendProfile::optionName(self::OPTION_AUDIT_CURSOR_KEY), $offset + strlen($complete), false);
             });
         } catch (\RuntimeException) {
             // Audit ingestion is best-effort. A later request retries from the same cursor.
@@ -4854,7 +4909,7 @@ final class Plugin
 
     public function getAuditLogEntries(): array
     {
-        $raw = get_option(self::OPTION_AUDIT_LOG_KEY);
+        $raw = get_option(BackendProfile::optionName(self::OPTION_AUDIT_LOG_KEY));
         if (!is_array($raw)) {
             return array();
         }
@@ -4869,7 +4924,7 @@ final class Plugin
             $this->withAuditMutationLock(function () use ($clean): void {
                 $entries = $this->getAuditLogEntries();
                 array_unshift($entries, $clean);
-                update_option(self::OPTION_AUDIT_LOG_KEY, array_slice($entries, 0, 2000), false);
+                update_option(BackendProfile::optionName(self::OPTION_AUDIT_LOG_KEY), array_slice($entries, 0, 2000), false);
             });
         } catch (\RuntimeException) {
             // Audit logging must not fail the requested queue operation.
@@ -4882,14 +4937,14 @@ final class Plugin
         $lockToken = wp_generate_uuid4();
         while (true) {
             $payload = array('token' => $lockToken, 'createdAt' => gmdate('c'));
-            if (add_option(self::OPTION_AUDIT_MUTATION_LOCK_KEY, $payload, '', false)) {
+            if (add_option(BackendProfile::optionName(self::OPTION_AUDIT_MUTATION_LOCK_KEY), $payload, '', false)) {
                 break;
             }
 
-            $existing = get_option(self::OPTION_AUDIT_MUTATION_LOCK_KEY);
+            $existing = get_option(BackendProfile::optionName(self::OPTION_AUDIT_MUTATION_LOCK_KEY));
             $createdAt = is_array($existing) ? strtotime((string) ($existing['createdAt'] ?? '')) : false;
             if (!is_array($existing) || ($createdAt !== false && (time() - $createdAt) > 30)) {
-                delete_option(self::OPTION_AUDIT_MUTATION_LOCK_KEY);
+                delete_option(BackendProfile::optionName(self::OPTION_AUDIT_MUTATION_LOCK_KEY));
                 continue;
             }
             if (microtime(true) >= $deadline) {
@@ -4901,9 +4956,9 @@ final class Plugin
         try {
             return $callback();
         } finally {
-            $existing = get_option(self::OPTION_AUDIT_MUTATION_LOCK_KEY);
+            $existing = get_option(BackendProfile::optionName(self::OPTION_AUDIT_MUTATION_LOCK_KEY));
             if (is_array($existing) && (($existing['token'] ?? '') === $lockToken)) {
-                delete_option(self::OPTION_AUDIT_MUTATION_LOCK_KEY);
+                delete_option(BackendProfile::optionName(self::OPTION_AUDIT_MUTATION_LOCK_KEY));
             }
         }
     }
@@ -4977,8 +5032,8 @@ final class Plugin
         $config = $this->getConfig();
         $logsRelative = $this->normalizeStorageRelativePath((string) ($config['logDir'] ?? 'logs'), 'logs');
         return array(
-            'runtime' => trailingslashit($upload['baseurl']) . 'smartcloud-static-publisher/runtime/',
-            'logs' => trailingslashit($upload['baseurl']) . 'smartcloud-static-publisher/' . trailingslashit($logsRelative),
+            'runtime' => trailingslashit($upload['baseurl']) . 'smartcloud-static-publisher' . BackendProfile::storageSuffix() . '/runtime/',
+            'logs' => trailingslashit($upload['baseurl']) . 'smartcloud-static-publisher' . BackendProfile::storageSuffix() . '/' . trailingslashit($logsRelative),
         );
     }
 
@@ -5464,7 +5519,7 @@ final class Plugin
         if ($this->queueMutationLockHeld) return $callback();
         $deadline = microtime(true) + 5.0;
         $staleAfterSeconds = 30;
-        $lockKey = self::OPTION_QUEUE_MUTATION_LOCK_KEY;
+        $lockKey = BackendProfile::optionName(self::OPTION_QUEUE_MUTATION_LOCK_KEY);
         $lockToken = wp_generate_uuid4();
 
         while (true) {

@@ -2,6 +2,8 @@
 
 namespace SmartCloud\WPSuite\StaticPublisher;
 
+require_once __DIR__ . '/class-backend-profile.php';
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -129,6 +131,7 @@ final class ContentChangeJournal
             'lastPostEventSequence' => $lastPostEventSequence,
             'configuredConsumerIds' => $this->configuredConsumerIds(),
             'verifiedReleases' => $this->readVerifiedReleases($consumerId),
+            'backendProfile' => ($profile = BackendProfile::context()) ? array('id' => $profile['id'], 'bindingRevision' => $profile['bindingRevision']) : null,
         );
 
         return is_array($state) ? array_merge($state, $providerState) : $providerState;
@@ -1094,7 +1097,9 @@ final class ContentChangeJournal
         array $postTypes,
         bool $includeSubsites
     ): void {
+        $profile = BackendProfile::context();
         do_action(self::PUBLIC_RELEASE_ACTION, array(
+            'backendProfile' => $profile ? array('id' => $profile['id'], 'bindingRevision' => $profile['bindingRevision']) : null,
             'contractVersion' => 1,
             'releaseType' => $releaseType,
             'consumerId' => $consumerId,

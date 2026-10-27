@@ -2,6 +2,8 @@
 
 namespace SmartCloud\WPSuite\StaticPublisher\Admin;
 
+require_once dirname(__DIR__, basename(__DIR__) === 'php' ? 2 : 1) . '/includes/class-backend-profile.php';
+
 use SmartCloud\WPSuite\StaticPublisher\Plugin;
 use SmartCloud\WPSuite\StaticPublisher\ContentChangeJournal;
 use WP_REST_Request;
@@ -326,7 +328,7 @@ var WpSuite = (typeof globalThis !== "undefined" ? globalThis : window).WpSuite;
         $currentCrawlEvent = $this->plugin->readJsonFile($paths['currentCrawlEvent']);
         $lastRun = $this->plugin->sanitizeJobForState($this->plugin->readJsonFile($paths['lastRun']));
         $queue = $this->plugin->readQueue();
-        $storedConfig = get_option(self::OPTION_KEY, null);
+        $storedConfig = get_option(\SmartCloud\WPSuite\StaticPublisher\BackendProfile::optionName(self::OPTION_KEY), null);
         $state = array(
             'config' => $this->plugin->getResolvedConfig(),
             'hasSavedConfiguration' => is_array($storedConfig),
@@ -450,7 +452,7 @@ var WpSuite = (typeof globalThis !== "undefined" ? globalThis : window).WpSuite;
 
         $storedConfig = $this->plugin->stripRuntimeOnlyConfigFromWpStorage($config);
 
-        update_option(self::OPTION_KEY, $storedConfig, false);
+        update_option(\SmartCloud\WPSuite\StaticPublisher\BackendProfile::optionName(self::OPTION_KEY), $storedConfig, false);
 
         $paths = $this->plugin->getRuntimePaths();
         wp_mkdir_p($paths['runtime']);

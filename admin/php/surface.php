@@ -2,6 +2,8 @@
 
 namespace SmartCloud\WPSuite\StaticPublisher\Admin;
 
+require_once dirname(__DIR__, basename(__DIR__) === 'php' ? 2 : 1) . '/includes/class-backend-profile.php';
+
 /** Local, intentionally small adapter over the canonical Publisher controller. */
 trait PublishingSurface
 {
@@ -21,7 +23,7 @@ trait PublishingSurface
 
     private function publishingRevision(): string
     {
-        return hash('sha256', (string) wp_json_encode(get_option(self::OPTION_KEY, null)));
+        return hash('sha256', (string) wp_json_encode(get_option(\SmartCloud\WPSuite\StaticPublisher\BackendProfile::optionName(self::OPTION_KEY), null)));
     }
 
     public function publishingSurface(): array|\WP_Error

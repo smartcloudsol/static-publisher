@@ -192,6 +192,14 @@ status_expect(
     'Open mode must not add role restrictions to job-status lookup.'
 );
 
+$profileJob = $plugin->sanitizeJobForState(array(
+    'id' => 'profile-job',
+    'backendProfile' => array('id' => 'development', 'bindingRevision' => 2, 'generation' => 3, 'renderHeaders' => array('X-WPSuite-Render-Context' => 'must-not-leak')),
+    'runtimeConfigSnapshot' => array('private' => 'must-not-leak'),
+));
+status_expect(!isset($profileJob['runtimeConfigSnapshot']) && !isset($profileJob['backendProfile']['renderHeaders']), 'State lookup must not expose profile capabilities or complete job config snapshots.');
+status_expect($profileJob['backendProfile']['id'] === 'development' && $profileJob['backendProfile']['bindingRevision'] === 2, 'State retains only public profile identity metadata.');
+
 $missing = $plugin->getJobStatus('missing-1');
 status_expect($missing['found'] === false && $missing['status'] === 'not-found', 'An absent or expired job must be reported without guessing.');
 

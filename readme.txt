@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.1.1
+Stable tag: 1.2.0
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -514,6 +514,12 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.2.0 =
+* Keep profile publishing queues, runtime files and manifests separate, and validate independent publishing destinations.
+* Capture job configuration and render context so later CMS profile changes cannot retarget queued work or its licence and configuration assets.
+* Require a compatible exporter before profile initialization, check idle legacy work and fence the old scheduler safely.
+* Preserve ordinary single-backend publishing; update Publisher Core to 1.1.13 and shared Hub to 2.7.0. External exporter installation remains a separate operation.
+
 = 1.1.1 =
 * Compatibility: Bundle shared Hub 2.6.1 with correctly scoped PHP translations and literal configuration-reset messages; preserve existing reset and ownership safeguards.
 * PHP compatibility: Bind journal table identifiers, clarify translator placeholders, and preserve binary log cursors and atomic local runner-lock/reset behavior.
@@ -674,6 +680,9 @@ Build steps and development notes are documented in the repository README.
 Full operator guidance for older releases is preserved in the public [historical upgrade archive](https://github.com/smartcloudsol/static-publisher/blob/main/CHANGELOG-HISTORY.md).
 
 == Upgrade Notice ==
+
+= 1.2.0 =
+Update the exporter to 1.2.0 before enabling backend profiles. Drain legacy jobs, configure separate destinations and run a full first publication. Profile mode requires local rendering and rewriting.
 
 = 1.1.1 =
 Updates the bundled shared Hub without changing publishing settings. Shadow-runtime asset discovery requires a separate exporter/workers 1.1.84 update and an affected-page recrawl; this plugin update does not deploy the external runner.
