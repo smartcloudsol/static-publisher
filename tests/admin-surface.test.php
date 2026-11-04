@@ -29,6 +29,7 @@ namespace SmartCloud\WPSuite\StaticPublisher {
         public function sanitizeConfig($config) { return $config; }
         public function stripRuntimeOnlyConfigFromWpStorage($config) { return $config; }
         public function buildRuntimeConfig($config) { return $config; }
+        public function persistRuntimeConfig($config) { return $config; }
         public function writeJsonFile($path, $data) {}
         public function ingestRuntimeAuditEvents() {}
         public function getRuntimePaths() { $keys = array('runtime', 'config', 'currentRun', 'currentProgress', 'currentCrawlEvent', 'lastRun', 'schedulerState', 'queueRunnerHeartbeat', 'deployDiff', 'contentSyncState', 'contentSyncCurrent', 'contentSyncCheckpoint', 'contentSyncBaseline', 'lock'); return array_combine($keys, array_map(static fn($key) => '/tmp/nonexistent-publisher-test/' . $key, $keys)); }

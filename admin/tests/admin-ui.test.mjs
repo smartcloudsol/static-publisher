@@ -403,6 +403,91 @@ async function choose(page, label, value) {
 
 try {
   for (const width of [1280, 390]) {
+    await test(`targeted asset refresh controls in dialog and job queue (${width}px)`, async () => {
+      const { page, errors, queuedJobs } = await openFixture({ width, height: 1000 });
+      const urls = Array.from({ length: 6 }, (_, i) => `/page-${i + 1}/`);
+      const multiline = `${urls.join("\r\n")}\r\n\r\n ${urls[0]} `;
+      const checkbox = () => page.getByRole("checkbox", { name: "Download assets again for this job" });
+      const chooseTask = async (container, label, value) => {
+        await container.getByRole("textbox", { name: new RegExp(`^${label}`) }).click();
+        await page.getByRole("option", { name: value, exact: true }).click();
+      };
+      try {
+        await page.evaluate(() => window.dispatchEvent(new Event("wpsuite-publisher-launch")));
+        const dialog = page.getByRole("dialog", { name: "Publish site", exact: true });
+        await dialog.waitFor();
+        assert.equal(await checkbox().count(), 0);
+        await chooseTask(dialog, "Task", "Export selected URLs");
+        assert.equal(await checkbox().isChecked(), false);
+        await dialog.getByRole("textbox", { name: "URLs (one per line)" }).fill(multiline);
+        if (process.env.PUBLISHER_UI_SCREENSHOTS) await page.screenshot({ path: `/tmp/publisher-refresh-modal-v2-${width}.png` });
+        await dialog.getByRole("button", { name: "Open URL list help" }).click();
+        await page.locator("#job-url-path").waitFor({ state: "visible" });
+        await page.locator(".wpsuite-doc-sidebar .mantine-Drawer-close").click();
+        await page.locator("#job-url-path").waitFor({ state: "hidden" });
+        await dialog.getByRole("button", { name: "Open asset refresh help" }).click();
+        await page.locator("#job-refresh-assets").waitFor({ state: "visible" });
+        await page.locator(".wpsuite-doc-sidebar .mantine-Drawer-close").click();
+        await page.locator("#job-refresh-assets").waitFor({ state: "hidden" });
+        assert.equal(await checkbox().isChecked(), false);
+        await checkbox().check();
+        await dialog.getByRole("button", { name: "Open asset refresh help" }).click();
+        await page.locator("#job-refresh-assets").waitFor({ state: "visible" });
+        await page.locator(".wpsuite-doc-sidebar .mantine-Drawer-close").click();
+        await page.locator("#job-refresh-assets").waitFor({ state: "hidden" });
+        assert.equal(await checkbox().isChecked(), true);
+        await dialog.getByRole("button", { name: "Queue publishing job" }).click();
+        await dialog.waitFor({ state: "hidden" });
+        assert.deepEqual(queuedJobs.at(-1), { command: "url", urls, refreshAssets: true });
+        await page.evaluate(() => window.dispatchEvent(new Event("wpsuite-publisher-launch")));
+        await dialog.waitFor();
+        await chooseTask(dialog, "Task", "Export selected URLs");
+        await checkbox().check();
+        await chooseTask(dialog, "Task", "Export and publish");
+        assert.equal(await checkbox().count(), 0);
+        await chooseTask(dialog, "Task", "Retry timed-out pages");
+        assert.equal(await checkbox().isChecked(), false);
+        await checkbox().check();
+        await dialog.getByRole("button", { name: "Queue publishing job" }).click();
+        await dialog.waitFor({ state: "hidden" });
+        assert.deepEqual(queuedJobs.at(-1), { command: "retry-timeouts", refreshAssets: true });
+
+        const command = page.getByRole("textbox", { name: /^Command/ });
+        const commandBox = await command.boundingBox();
+        await chooseTask(page, "Command", "url (selected URLs)");
+        const afterBox = await command.boundingBox();
+        assert.ok(Math.abs(commandBox.x - afterBox.x) < 1 && Math.abs(commandBox.width - afterBox.width) < 1);
+        assert.equal(await checkbox().isChecked(), false);
+        const input = page.getByRole("textbox", { name: "URLs (one per line)", exact: true });
+        await input.fill(multiline);
+        const inputBox = await input.boundingBox();
+        for (const label of ["Command", "Crawl mode", "Deployment profile", "Content-sync rule"]) {
+          const box = await page.getByRole("textbox", { name: new RegExp(`^${label}`) }).boundingBox();
+          assert.ok(inputBox.y >= box.y + box.height, `${label} must be above URL list`);
+        }
+        await page.getByRole("button", { name: "Open URL list help" }).click();
+        await page.locator("#job-url-path").waitFor({ state: "visible" });
+        await page.locator(".wpsuite-doc-sidebar .mantine-Drawer-close").click();
+        await page.locator("#job-url-path").waitFor({ state: "hidden" });
+        await checkbox().scrollIntoViewIfNeeded();
+        if (process.env.PUBLISHER_UI_SCREENSHOTS) await page.screenshot({ path: `/tmp/publisher-refresh-details-v2-${width}.png` });
+        await checkbox().check();
+        const queued = page.waitForResponse(response => response.url().endsWith("/publisher/jobs") && response.request().method() === "POST");
+        await page.getByRole("button", { name: "Queue Job", exact: true }).click();
+        await queued;
+        assert.deepEqual(queuedJobs.at(-1), { command: "url", urls, refreshAssets: true });
+        await chooseTask(page, "Command", "publish");
+        assert.equal(await checkbox().count(), 0);
+        await chooseTask(page, "Command", "retry-timeouts");
+        assert.equal(await checkbox().isChecked(), false);
+        await page.getByRole("button", { name: "Open asset refresh help" }).click();
+        await page.locator("#job-refresh-assets").waitFor({ state: "visible" });
+        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1));
+        assert.deepEqual(errors, []);
+      } finally { await closeFixture(page); }
+    });
+  }
+  for (const width of [1280, 390]) {
     await test(`Compact publishing dialog queues saved target settings from collapsed details (${width}px)`, async () => {
       const { page, errors, queuedJobs, getSavedConfig } = await openFixture({ width, height: 1000 }, false, null, null, null,
         { awsProfile: "base-runner", defaultDeploymentProfile: "production", deploymentProfiles: { production: { awsProfile: "prod-runner", targetOrigin: "https://published.example.test", s3: { bucket: "prod-bucket", prefix: "www/" } } } },
@@ -450,13 +535,13 @@ try {
       await page.evaluate(() => window.dispatchEvent(new Event("wpsuite-publisher-launch")));
       const dialog = page.getByRole("dialog", { name: "Publish site", exact: true });
       await dialog.getByRole("textbox", { name: "Task", exact: true }).click();
-      await page.getByRole("option", { name: "Export one URL", exact: true }).click();
+      await page.getByRole("option", { name: "Export selected URLs", exact: true }).click();
       assert.equal(await dialog.getByRole("button", { name: "Queue publishing job", exact: true }).isDisabled(), true);
-      await dialog.getByRole("textbox", { name: "URL path", exact: true }).fill("/selected-page/");
+      await dialog.getByRole("textbox", { name: "URLs (one per line)", exact: true }).fill("/selected-page/");
       await dialog.getByRole("button", { name: "Queue publishing job", exact: true }).click();
       await dialog.getByRole("alert").filter({ hasText: "Runner baseline needs refresh." }).waitFor();
-      assert.deepEqual(queuedJobs, [{ command: "url", url: "/selected-page/" }]);
-      assert.equal(await dialog.getByRole("textbox", { name: "URL path", exact: true }).inputValue(), "/selected-page/");
+      assert.deepEqual(queuedJobs, [{ command: "url", urls: ["/selected-page/"] }]);
+      assert.equal(await dialog.getByRole("textbox", { name: "URLs (one per line)", exact: true }).inputValue(), "/selected-page/");
     } finally { await closeFixture(page); }
   });
 

@@ -766,6 +766,36 @@ const pages = {
         )}
       </Text>
 
+      <Title order={3} mt="md" id="job-refresh-assets">
+        <span className="highlightable">
+          {__("Download assets again for this job", TEXT_DOMAIN)}
+        </span>
+      </Title>
+      <Text>
+        {__(
+          "Available for selected-URL and retry-timeouts jobs in both the Publish site dialog and the detailed job controls. It is off by default and applies only to the job you queue; changing the task resets the checkbox.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+      <Text mt="xs">
+        {__(
+          "With this option off, the exporter reuses previously completed assets that are still available. New, missing, empty or unfinished assets are downloaded. Site configuration and licence assets that require a fresh capture remain fresh. The rendering browser may still request source resources it needs.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+      <Text mt="xs">
+        {__(
+          "Enable it when source CSS, JavaScript, images or other assets changed and must be downloaded again during a targeted repair. It does not follow additional pages: URL jobs stay on the supplied URL and retry jobs stay on their initial failure list. Use a normal full or incremental publish for wider page discovery.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+      <Text mt="xs">
+        {__(
+          "Requires exporter 1.2.5 or newer on the queue-runner host. The equivalent CLI option is --refresh-assets. Multiple completed URL jobs can be followed by one deploy; retry and URL jobs do not deploy automatically.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+
       <Title order={3} mt="md" id="job-deployment-profile">
         <span className="highlightable">
           {__("Job Deployment Profile", TEXT_DOMAIN)}
@@ -797,11 +827,23 @@ const pages = {
       </Text>
 
       <Title order={3} mt="md" id="job-url-path">
-        <span className="highlightable">{__("Job URL Path", TEXT_DOMAIN)}</span>
+        <span className="highlightable">{__("Job URL List", TEXT_DOMAIN)}</span>
       </Title>
       <Text>
         {__(
-          "Used only for 'url' command. Provide one path to export a single page workflow.",
+          "Used only for the url command. Enter one full URL or source-relative path per line. Blank lines and exact duplicates are ignored. The list is processed in one crawl job and produces one deploy plan; run deploy afterwards when the prepared output is ready.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+      <Text mt="xs">
+        {__(
+          "The list appears in a separate full-width row below the detailed job controls, and in the Publish site dialog. Up to 500 unique URLs and 64 KiB of combined URL text are accepted. Source scope and normal crawler URL policies still apply; this job does not follow discovered pages.",
+          TEXT_DOMAIN,
+        )}
+      </Text>
+      <Text mt="xs">
+        {__(
+          "Completed assets are reused unless Download assets again for this job is enabled. New or missing assets are still captured. Requires exporter 1.2.5 or newer on the queue-runner host; the crawler already supports multiple --url arguments, but the runner must expand the queued list into those arguments.",
           TEXT_DOMAIN,
         )}
       </Text>

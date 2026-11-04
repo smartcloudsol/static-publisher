@@ -436,33 +436,111 @@ var WpSuite = (typeof globalThis !== "undefined" ? globalThis : window).WpSuite;
 
     public function handleSaveConfig(WP_REST_Request $request): WP_REST_Response
     {
+        $stage = 'lock';
         try {
-            return $this->plugin->withQueueMutationLock(fn() => $this->saveConfigLocked($request));
+            return $this->plugin->withQueueMutationLock(function () use ($request, &$stage) {
+                return $this->saveConfigLocked($request, $stage);
+            });
         } catch (\Throwable $error) {
-            return new WP_REST_Response(array('message' => __('Publishing configuration or queue is busy. Try again shortly.', 'smartcloud-static-publisher')), 409);
+            return $this->saveFailureResponse($error, $stage);
         }
     }
 
-    private function saveConfigLocked(WP_REST_Request $request): WP_REST_Response
+    private function saveConfigLocked(WP_REST_Request $request, ?string &$stage = null): WP_REST_Response
     {
+        $stage = 'sanitize';
         $payload = $request->get_json_params();
         $data = is_array($payload) ? $payload : array();
         $config = $this->plugin->sanitizeConfig($data);
         $resolvedConfig = $this->plugin->getResolvedConfig($config);
 
         $storedConfig = $this->plugin->stripRuntimeOnlyConfigFromWpStorage($config);
-
-        update_option(\SmartCloud\WPSuite\StaticPublisher\BackendProfile::optionName(self::OPTION_KEY), $storedConfig, false);
-
-        $paths = $this->plugin->getRuntimePaths();
-        wp_mkdir_p($paths['runtime']);
-        $this->plugin->writeJsonFile($paths['config'], $this->plugin->buildRuntimeConfig($config));
+        $stage = 'runtime-build';
+        $profile = \SmartCloud\WPSuite\StaticPublisher\BackendProfile::context();
+        if ($profile !== null) {
+            $runtime = $this->plugin->buildRuntimeConfig($config);
+            $stage = 'target';
+            \SmartCloud\WPSuite\StaticPublisher\BackendProfile::assertTarget($runtime);
+            $stage = 'readiness';
+            \SmartCloud\WPSuite\StaticPublisher\BackendProfile::assertRunnerReady();
+        }
+        $stage = 'db-write';
+        $option = \SmartCloud\WPSuite\StaticPublisher\BackendProfile::optionName(self::OPTION_KEY);
+        $previous = get_option($option, null);
+        update_option($option, $storedConfig, false);
+        if (get_option($option, null) !== $storedConfig) throw new \RuntimeException('Publisher configuration could not be saved.');
+        $stage = 'runtime-persist';
+        try { $this->plugin->persistRuntimeConfig($config); }
+        catch (\Throwable $error) {
+            if ($previous === null) delete_option($option); else update_option($option, $previous, false);
+            throw $error;
+        }
 
         return new WP_REST_Response(array(
             'success' => true,
             'config' => $resolvedConfig,
             'message' => __('Configuration saved.', 'smartcloud-static-publisher'),
         ), 200);
+    }
+
+    /** Never return or persist exception messages or request/configuration values. */
+    private function saveFailureResponse(\Throwable $error, string $stage): WP_REST_Response
+    {
+        $stages = array('lock', 'sanitize', 'runtime-build', 'target', 'readiness', 'db-write', 'runtime-persist');
+        if (!in_array($stage, $stages, true)) $stage = 'unknown';
+        $code = 'publisher_save_failed';
+        $status = 500;
+        $message = __('Publishing settings could not be saved. Use the request ID to investigate the failed save.', 'smartcloud-static-publisher');
+        // Exact static reasons only: an arbitrary runtime error is never a busy queue.
+        if ($stage === 'lock' && get_class($error) === \RuntimeException::class && $error->getMessage() === 'Timed out acquiring queue mutation lock.') {
+            $code = 'publisher_queue_busy';
+            $status = 409;
+            $message = __('Publishing configuration or queue is busy. Try again shortly.', 'smartcloud-static-publisher');
+        } elseif ($stage === 'readiness' && get_class($error) === \RuntimeException::class && $error->getMessage() === 'Install and start the compatible backend-profile Publisher runner before publishing.') {
+            $code = 'publisher_runner_unavailable';
+            $status = 503;
+            $message = __('The compatible Publisher runner is unavailable. Check its readiness and restart it before saving.', 'smartcloud-static-publisher');
+        } elseif ($stage === 'target' && get_class($error) === \RuntimeException::class && $error->getMessage() === 'Install and start the backend-profile Lambda-compatible Publisher runner before enabling delegation.') {
+            $code = 'publisher_profile_lambda_runner_required';
+            $status = 503;
+            $message = __('Install and start the backend-profile Lambda-compatible Publisher runner before enabling delegation.', 'smartcloud-static-publisher');
+        } elseif ($stage === 'target' && get_class($error) === \RuntimeException::class && in_array($error->getMessage(), array(
+            'Invalid replacement backend identity.', 'Configure the publishing region for this backend profile first.',
+            'Invalid replacement backend API.',
+            'Configure the publishing bucket and CloudFront distribution for this backend profile first.',
+            'The publishing profile destinations overlap or could not be verified.',
+            'The publishing target does not match this backend profile.',
+        ), true)) {
+            $code = 'publisher_target_invalid';
+            $status = 422;
+            $message = __('The publishing destination is invalid for this backend profile. Check its address, bucket, region, distribution and worker settings.', 'smartcloud-static-publisher');
+        } elseif ($stage === 'runtime-persist' && get_class($error) === \RuntimeException::class && in_array($error->getMessage(), array(
+            'Publisher runtime directory unavailable.', 'Publisher runtime configuration invalid.',
+            'Publisher runtime configuration could not be persisted.', 'Publisher runtime configuration verification failed.',
+            'Publisher binding registry unavailable.', 'Publisher binding directory unavailable.',
+            'Publisher binding registry lock unavailable.', 'Invalid current Publisher binding.',
+            'Current Publisher binding is stale.', 'Publisher binding registry write failed.',
+        ), true)) {
+            $code = 'publisher_runtime_persist_failed';
+            $message = __('Publisher could not persist its runtime configuration. Check the runtime directory and current binding files.', 'smartcloud-static-publisher');
+        } elseif ($stage === 'db-write' && get_class($error) === \RuntimeException::class && $error->getMessage() === 'Publisher configuration could not be saved.') {
+            $code = 'publisher_configuration_store_failed';
+            $message = __('Publisher could not verify the saved WordPress settings. Use the request ID to investigate.', 'smartcloud-static-publisher');
+        }
+        $exceptionClass = get_class($error);
+        if (!in_array($exceptionClass, array('RuntimeException', 'InvalidArgumentException', 'TypeError', 'ValueError', 'JsonException', 'ErrorException', 'Error', 'Exception'), true)) $exceptionClass = 'Throwable';
+        $file = preg_replace('/[^A-Za-z0-9_.-]/', '', basename($error->getFile()));
+        $diagnostic = array(
+            'code' => $code, 'stage' => $stage, 'requestId' => wp_generate_uuid4(),
+            'exceptionClass' => $exceptionClass, 'file' => substr((string) $file, 0, 120), 'line' => max(0, $error->getLine()),
+        );
+        try {
+            $key = \SmartCloud\WPSuite\StaticPublisher\BackendProfile::optionName('smartcloud_static_publisher_last_save_diagnostic');
+            set_transient($key, $diagnostic, HOUR_IN_SECONDS);
+        } catch (\Throwable $telemetryError) {
+            // Diagnostic storage must never mask the original failure response.
+        }
+        return new WP_REST_Response(array_merge(array('message' => $message), $diagnostic), $status);
     }
 
     public function handleBumpChangeTokenRevision(): WP_REST_Response

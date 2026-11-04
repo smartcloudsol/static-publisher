@@ -60,6 +60,9 @@ import {
 import { getWpSuite } from "@smart-cloud/wpsuite-core";
 import DocSidebar from "./DocSidebar";
 import PublishDialog, { type PublishRequest } from "./PublishDialog";
+import TargetedAssetOptions from "./TargetedAssetOptions";
+import UrlJobInput from "./UrlJobInput";
+import { parseUrlJobLines, urlJobFields } from "./url-job-input";
 import { requestedPublisherAdminPage, resolvePublisherAdminPage, type PublisherAdminPage } from "./admin-page";
 import { useAdminSectionHistory } from "./admin-section-history";
 import { selectCurrentContentSyncStates } from "./content-sync-status";
@@ -2018,6 +2021,7 @@ export default function Main({ store }: MainProps) {
   const [deploymentProfile, setDeploymentProfile] = useState("");
   const [contentSyncRuleId, setContentSyncRuleId] = useState("");
   const [singleUrl, setSingleUrl] = useState("");
+  const [refreshJobAssets, setRefreshJobAssets] = useState(false);
   const [selectedLog, setSelectedLog] = useState("");
   const [rawLogContent, setRawLogContent] = useState("");
   const [logMeta, setLogMeta] = useState<LogFileResponse | null>(null);
@@ -3233,6 +3237,7 @@ export default function Main({ store }: MainProps) {
   const canManageExtraDeploymentProfiles =
     IS_PREMIUM_BUILD && hasActiveSubscription;
   const commandSupportsCrawlMode = command === "publish" || command === "crawl";
+  const commandSupportsAssetRefresh = command === "url" || command === "retry-timeouts";
   const commandSupportsDeploymentProfile =
     command === "publish" ||
     command === "deploy" ||
@@ -3260,6 +3265,7 @@ export default function Main({ store }: MainProps) {
     : "";
   const canQueueJobs =
     hasSavedConfig &&
+    (command !== "url" || parseUrlJobLines(singleUrl).length > 0) &&
     (command !== "content-sync" ||
       (hasIncrementalAccess && selectedQueueContentSyncRule !== ""));
   const showIncrementalFallbackWarning =
@@ -3645,7 +3651,8 @@ export default function Main({ store }: MainProps) {
             command === "content-sync"
               ? selectedQueueContentSyncRule
               : undefined,
-          url: command === "url" ? singleUrl : "",
+          ...(command === "url" ? urlJobFields(singleUrl) : {}),
+          refreshAssets: commandSupportsAssetRefresh && refreshJobAssets ? true : undefined,
           awsTempCreds:
             supportsAwsCreds && hasAnyAwsCred
               ? {
@@ -3842,7 +3849,9 @@ export default function Main({ store }: MainProps) {
         } : null}
         configured={!!launchState && inferHasSavedConfig(launchState.config, launchState)}
         loading={launchLoading} loadError={launchError}
-        pro={hasIncrementalAccess} onQueue={queueCompactJob} />
+        pro={hasIncrementalAccess} onQueue={queueCompactJob}
+        onAssetHelp={() => openInfo("job-refresh-assets")}
+        onUrlHelp={() => openInfo("job-url-path")} />
       <DocSidebar
         opened={docOpened}
         close={closeDoc}
@@ -5353,7 +5362,7 @@ export default function Main({ store }: MainProps) {
                             </Alert>
                           )}
                           <SimpleGrid
-                            cols={{ base: 1, md: 6 }}
+                            cols={{ base: 1, md: 5 }}
                             spacing="md"
                             verticalSpacing="md"
                           >
@@ -5372,6 +5381,7 @@ export default function Main({ store }: MainProps) {
                                 const nextCommand =
                                   (value as JobCommand) || "publish";
                                 setCommand(nextCommand);
+                                setRefreshJobAssets(false);
                                 if (
                                   nextCommand !== "publish" &&
                                   nextCommand !== "deploy" &&
@@ -5392,30 +5402,13 @@ export default function Main({ store }: MainProps) {
                                 },
                                 {
                                   value: "url",
-                                  label: "url (single path export)",
+                                  label: __("url (selected URLs)", TEXT_DOMAIN),
                                 },
                                 {
                                   value: "content-sync",
                                   label: "content-sync",
                                 },
                               ]}
-                            />
-                            <TextInput
-                              style={queueJobCellStyle}
-                              disabled={command !== "url"}
-                              label={infoLabel(
-                                __("URL path", TEXT_DOMAIN),
-                                "job-url-path",
-                              )}
-                              description={__(
-                                "Used only for the 'url' command.",
-                                TEXT_DOMAIN,
-                              )}
-                              placeholder={__("/blog/post/", TEXT_DOMAIN)}
-                              value={singleUrl}
-                              onChange={(event) =>
-                                setSingleUrl(event.currentTarget.value)
-                              }
                             />
                             <Select
                               style={queueJobCellStyle}
@@ -5547,6 +5540,14 @@ export default function Main({ store }: MainProps) {
                               </Stack>
                             </Box>
                           </SimpleGrid>
+                          {command === "url" && <Box mt="md">
+                            <UrlJobInput value={singleUrl} onChange={setSingleUrl} disabled={queueing}
+                              onHelp={() => openInfo("job-url-path")} />
+                          </Box>}
+                          {commandSupportsAssetRefresh && <Box mt="md">
+                            <TargetedAssetOptions checked={refreshJobAssets} onChange={setRefreshJobAssets}
+                              disabled={queueing} onHelp={() => openInfo("job-refresh-assets")} />
+                          </Box>}
                           {showIncrementalFallbackWarning && (
                             <Alert mt="md" color="yellow" variant="light">
                               <Text size="sm">

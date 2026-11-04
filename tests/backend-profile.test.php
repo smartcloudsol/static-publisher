@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace SmartCloud\WPSuite\Hub {
     final class BackendProfiles {
+        public static function configuredContexts(): array { return $GLOBALS['configuredContexts'] ?? []; }
         public static function runWithContext(array $context, callable $callback): mixed {
             $previous = $GLOBALS['profile']; $GLOBALS['profile'] = $context;
             try { return $callback(); } finally { $GLOBALS['profile'] = $previous; }
@@ -20,7 +21,7 @@ namespace {
     define('ABSPATH', __DIR__ . '/');
     final class WP_Error { public function __construct(public string $code, public string $message, public array $data = []) {} }
     $profile = null; $configs = [];
-    $uploadsRoot = sys_get_temp_dir() . '/publisher-profile-rollout-' . getmypid();
+    $uploadsRoot = sys_get_temp_dir() . '/publisher-profile-rollout-' . bin2hex(random_bytes(8));
     function wp_get_upload_dir(): array { return array('basedir' => $GLOBALS['uploadsRoot']); }
     function apply_filters(string $hook, mixed $value): mixed {
         if ($hook === 'smartcloud_wpsuite_backend_profile_context') return $GLOBALS['profile'];
@@ -92,11 +93,57 @@ namespace {
     check(!file_exists($legacy . '/queue-mutation.lock'), 'temporary queue lock is released');
     check($class::initializationCheck(true, $dev) === true, 'retry after a later DB failure preserves fence and does not re-enable legacy scheduler');
     $class::assertRunnerReady();
+    try { $class::assertRunnerReady(false, true); throw new RuntimeException('v1 runner authorized delegation'); }
+    catch (RuntimeException $error) { check(str_contains($error->getMessage(), 'Lambda-compatible'), 'v1 runner cannot authorize delegated profiles'); }
     $marker['updatedAt'] = gmdate('c', time() - 700);
     file_put_contents($protocol . '/runner-ready.json', json_encode($marker));
     try { $class::assertRunnerReady(); throw new RuntimeException('stale runner accepted'); }
     catch (RuntimeException $error) { check(str_contains($error->getMessage(), 'compatible'), 'stale compatible-runner proof cannot authorize new publishing'); }
     unlink($protocol . '/runner-ready.json'); unlink($legacy . '/queue.json'); unlink($legacy . '/current-run.json'); unlink($legacy . '/export.lock'); unlink($legacy . '/config.legacy-drained.json');
     rmdir($protocol); rmdir(dirname($protocol)); rmdir($legacy); rmdir(dirname($legacy)); rmdir($uploadsRoot);
+    $context = ['enabled' => true, 'id' => 'production', 'namespace' => 'production', 'bindingRevision' => 2, 'stateNamespace' => 'production/bindings/2', 'identity' => ['workspaceApiMode' => 'workspace', 'foundationApiBaseUrl' => 'https://api-prod.wpsuite.io']];
+    $GLOBALS['profile'] = $context;
+    check($class::storageSuffix() === '/backend-profiles/v2/production/bindings/2', 'Replacement Publisher runtime reused historical path');
+    $configuredContexts = [$context];
+    $target = ['targetOrigin' => 'https://prod.wpsuite.io', 's3' => ['bucket' => 'preview', 'prefix' => 'www', 'region' => 'us-east-1'], 'cloudFront' => ['distributionId' => 'PREVIEW']];
+    $class::assertTarget($target);
+    try { $class::assertRunnerReady(); throw new RuntimeException('v1 runner authorized v2'); }
+    catch (RuntimeException $error) { check(str_contains($error->getMessage(), 'compatible'), 'v2 requires distinct runner'); }
+    $v2 = $uploadsRoot . '/smartcloud-static-publisher/backend-profiles/v2'; mkdir($v2, 0700, true);
+    $marker = ['protocol' => $class::RUNNER_PROTOCOL_V2, 'pid' => getmypid(), 'updatedAt' => gmdate('c'), 'capabilities' => ['immutable-config', 'exact-origin-render', 'isolated-queues', 'revision-bound-target', 'current-binding-check']];
+    file_put_contents($v2 . '/runner-ready.json', json_encode($marker));
+    $class::assertRunnerReady(); $class::writeCurrentBindings();
+    $remote = $target; $remote['remoteWorkers'] = ['render' => ['enabled' => true]];
+    try { $class::assertTarget($remote); throw new RuntimeException('old runner authorized delegation'); }
+    catch (RuntimeException $error) { check(str_contains($error->getMessage(), 'Lambda-compatible'), 'old v2 runner must reject delegation'); }
+    $remote['remoteWorkers'] = ['deploy' => ['enabled' => true]];
+    try { $class::assertTarget($remote); throw new RuntimeException('old runner authorized deploy delegation'); }
+    catch (RuntimeException $error) { check(str_contains($error->getMessage(), 'Lambda-compatible'), 'old v2 runner must reject deploy delegation'); }
+    $marker['capabilities'][] = 'remote-profile-v1';
+    file_put_contents($v2 . '/runner-ready.json', json_encode($marker));
+    $class::assertTarget($remote);
+    $remote['remoteWorkers'] = ['deploy' => ['enabled' => true]];
+    $class::assertTarget($remote);
+    $remote['remoteWorkers'] = ['rewrite' => ['enabled' => true]];
+    $class::assertTarget($remote);
+    $marker['updatedAt'] = gmdate('c', time() - 700);
+    file_put_contents($v2 . '/runner-ready.json', json_encode($marker));
+    try { $class::assertTarget($remote); throw new RuntimeException('stale runner authorized delegation'); }
+    catch (RuntimeException $error) { check(str_contains($error->getMessage(), 'Lambda-compatible'), 'stale runner must reject delegation'); }
+    $marker['updatedAt'] = gmdate('c');
+    $marker['capabilities'] = array_values(array_diff($marker['capabilities'], ['current-binding-check']));
+    file_put_contents($v2 . '/runner-ready.json', json_encode($marker));
+    try { $class::assertTarget($remote); throw new RuntimeException('incomplete runner authorized delegation'); }
+    catch (RuntimeException $error) { check(str_contains($error->getMessage(), 'Lambda-compatible'), 'base capabilities remain required'); }
+    $pointer = json_decode(file_get_contents($v2 . '/current-bindings.json'), true);
+    check($pointer === ['protocol' => $class::RUNNER_PROTOCOL_V2, 'bindings' => [['id' => 'production', 'bindingRevision' => 2, 'stateNamespace' => 'production/bindings/2']]], 'Current binding pointer not revision scoped');
+    $bad = $target; $bad['targetOrigin'] = 'https://wpsuite.io';
+    try { $class::assertTarget($bad); throw new RuntimeException('wrong origin accepted'); } catch (RuntimeException $error) { check(str_contains($error->getMessage(), 'does not match'), 'preview origin enforced'); }
+    $profile['identity']['foundationApiBaseUrl'] = 'https://evil.example';
+    try { $class::assertTarget($target); throw new RuntimeException('wrong API accepted'); } catch (RuntimeException $error) { check(str_contains($error->getMessage(), 'API'), 'preview API enforced'); }
+    $profile = $context; $configuredContexts = [];
+    try { $class::writeCurrentBindings(); throw new RuntimeException('stale pointer accepted'); } catch (RuntimeException $error) { check(str_contains($error->getMessage(), 'stale'), 'stale pointer rejected'); }
+    unlink($v2 . '/runner-ready.json'); unlink($v2 . '/current-bindings.json'); unlink($v2 . '/current-bindings.lock');
+    rmdir($v2); rmdir(dirname($v2)); rmdir(dirname(dirname($v2))); rmdir($uploadsRoot);
     echo "Publisher backend profile isolation/target checks PASS\n";
 }

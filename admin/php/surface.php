@@ -113,7 +113,8 @@ trait PublishingSurface
         $request = new \WP_REST_Request('POST');
         $request->set_header('content-type', 'application/json');
         $request->set_body(wp_json_encode($config));
-        $this->handleSaveConfig($request);
+        $response = $this->handleSaveConfig($request);
+        if ($response->get_status() !== 200) return new \WP_Error('publisher_surface_save_failed', __('Publishing settings could not be saved.', 'smartcloud-static-publisher'), array('status' => $response->get_status()));
         return $this->publishingSurface();
     }
 

@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.2.1
+Stable tag: 1.2.3
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -26,7 +26,7 @@ The plugin provides:
 
 * Admin UI for export configuration
 * Runtime config generation in uploads
-* Job queueing (publish, crawl, deploy, invalidate, retry-timeouts, single URL, targeted content sync)
+* Job queueing (publish, crawl, deploy, invalidate, retry-timeouts, selected URL lists, targeted content sync)
 * Run status and log viewing
 
 The Node.js exporter provides:
@@ -513,6 +513,16 @@ SmartCloud Static Publisher is shipped to WordPress.org as a pre-built distribut
 Build steps and development notes are documented in the repository README.
 
 == Changelog ==
+
+= 1.2.3 =
+
+* Improves publishing reliability and WP Suite profile handling.
+
+= 1.2.2 =
+* Export multiple selected URLs in one job using a separate multiline URL list, with blank-line and duplicate handling.
+* Add an optional per-job asset refresh checkbox to single-URL and retry jobs in both publishing dialogs and detailed job controls.
+* Keep the existing job input grid intact and document targeted asset reuse in the help sidebar.
+* Validate the queued option and preserve it in downloaded POSIX and PowerShell commands. Requires exporter 1.2.5 or newer on the queue-runner host.
 
 = 1.2.1 =
 * Improve the shared WordPress admin backend selectors and clarify production and development connection setup.

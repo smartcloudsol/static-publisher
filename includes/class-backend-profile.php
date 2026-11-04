@@ -17,6 +17,7 @@ final class BackendProfile
             || !in_array($context['namespace'] ?? '', array('', $context['id']), true)) {
             throw new \RuntimeException('Invalid publishing backend profile context.');
         }
+        if (isset($context['stateNamespace']) && $context['stateNamespace'] !== $context['id'] . '/bindings/' . $context['bindingRevision']) throw new \RuntimeException('Invalid publishing backend state namespace.');
         return $context;
     }
 
@@ -28,10 +29,17 @@ final class BackendProfile
     public static function storageSuffix(): string
     {
         $context = self::context();
-        return $context ? '/backend-profiles/v1/' . $context['id'] : '';
+        return $context ? (isset($context['stateNamespace']) ? '/backend-profiles/v2/' . $context['stateNamespace'] : '/backend-profiles/v1/' . $context['id']) : '';
     }
 
-    public static function runtimeMetadata(): ?array
+    public static function targetShape(array $config): array
+    {
+        return ['targetOrigin' => (string) ($config['targetOrigin'] ?? ''),
+            's3' => ['bucket' => (string) ($config['s3']['bucket'] ?? ''), 'prefix' => (string) ($config['s3']['prefix'] ?? ''), 'region' => (string) ($config['s3']['region'] ?? '')],
+            'cloudFront' => ['distributionId' => (string) ($config['cloudFront']['distributionId'] ?? '')]];
+    }
+
+    public static function runtimeMetadata(array $config = []): ?array
     {
         $context = self::context();
         if (!$context) return null;
@@ -44,6 +52,7 @@ final class BackendProfile
             'bindingRevision' => $context['bindingRevision'],
             'generation' => (int) ($context['generation'] ?? 0),
             'namespace' => (string) ($context['namespace'] ?? ''),
+            ...(isset($context['stateNamespace']) ? ['stateNamespace' => $context['stateNamespace'], 'target' => self::targetShape($config)] : []),
             'sourceOrigin' => untrailingslashit(home_url('/')),
             'renderHeaders' => $manager::renderHeaders($context),
         );
@@ -54,6 +63,16 @@ final class BackendProfile
         $context = self::context();
         if (!$context) return;
         $expected = $context['id'] === 'production' ? 'https://wpsuite.io' : 'https://staging.wpsuite.io';
+        if (isset($context['stateNamespace'])) {
+            $identity = $context['identity'] ?? null;
+            if (!is_array($identity) || ($identity['workspaceApiMode'] ?? '') !== 'workspace') throw new \RuntimeException('Invalid replacement backend identity.');
+            $api = $identity['foundationApiBaseUrl'] ?? '';
+            if ($context['id'] === 'production' && $api === 'https://api-prod.wpsuite.io') $expected = 'https://prod.wpsuite.io';
+            elseif ($context['id'] === 'production' && $api !== 'https://api.wpsuite.io') throw new \RuntimeException('Invalid replacement backend API.');
+            elseif ($context['id'] === 'development' && $api !== 'https://api-dev.wpsuite.io') throw new \RuntimeException('Invalid replacement backend API.');
+            $target = self::targetShape($config);
+            if ($target['s3']['region'] === '') throw new \RuntimeException('Configure the publishing region for this backend profile first.');
+        }
         if (trim((string) ($config['s3']['bucket'] ?? '')) === '' || trim((string) ($config['cloudFront']['distributionId'] ?? '')) === '') throw new \RuntimeException('Configure the publishing bucket and CloudFront distribution for this backend profile first.');
         $others = function_exists('apply_filters') ? apply_filters('smartcloud_wpsuite_backend_profile_contexts', array()) : array();
         $validation = self::activationCheck(true, $context, is_array($others) ? $others : array(), $config);
@@ -61,9 +80,11 @@ final class BackendProfile
         if (untrailingslashit((string) ($config['targetOrigin'] ?? '')) !== $expected) {
             throw new \RuntimeException('The publishing target does not match this backend profile.');
         }
+        if (!empty($config['remoteWorkers']['render']['enabled']) || !empty($config['remoteWorkers']['rewrite']['enabled']) || !empty($config['remoteWorkers']['deploy']['enabled'])) self::assertRunnerReady(false, true);
     }
 
     public const RUNNER_PROTOCOL = 'wpsuite-publisher-backend-profile-v1';
+    public const RUNNER_PROTOCOL_V2 = 'wpsuite-publisher-backend-profile-v2';
 
     private static function legacyRuntimeRoot(): string
     {
@@ -97,17 +118,47 @@ final class BackendProfile
         }
     }
 
-    public static function assertRunnerReady(bool $required = false): void
+    public static function assertRunnerReady(bool $required = false, bool $remoteRequired = false): void
     {
         if (!$required && !self::context()) return;
-        $path = dirname(self::legacyRuntimeRoot()) . '/backend-profiles/v1/runner-ready.json';
+        $v2 = isset(self::context()['stateNamespace']);
+        $protocol = $v2 ? self::RUNNER_PROTOCOL_V2 : self::RUNNER_PROTOCOL;
+        $path = dirname(self::legacyRuntimeRoot()) . '/backend-profiles/' . ($v2 ? 'v2' : 'v1') . '/runner-ready.json';
         $marker = is_file($path) ? json_decode((string) file_get_contents($path), true) : null;
-        if (!is_array($marker) || ($marker['protocol'] ?? '') !== self::RUNNER_PROTOCOL
+        $capabilities = array('immutable-config', 'exact-origin-render', 'isolated-queues');
+        if ($v2) $capabilities = array_merge($capabilities, array('revision-bound-target', 'current-binding-check'));
+        if ($remoteRequired) $capabilities[] = 'remote-profile-v1';
+        if (($remoteRequired && !$v2) || !is_array($marker) || ($marker['protocol'] ?? '') !== $protocol
             || !is_int($marker['pid'] ?? null) || $marker['pid'] < 1
             || !is_string($marker['updatedAt'] ?? null) || strtotime($marker['updatedAt']) < time() - 600 || strtotime($marker['updatedAt']) > time() + 60
-            || array_diff(array('immutable-config', 'exact-origin-render', 'isolated-queues'), (array) ($marker['capabilities'] ?? array()))) {
-            throw new \RuntimeException('Install and start the compatible backend-profile Publisher runner before publishing.');
+            || array_diff($capabilities, (array) ($marker['capabilities'] ?? array()))) {
+            throw new \RuntimeException($remoteRequired ? 'Install and start the backend-profile Lambda-compatible Publisher runner before enabling delegation.' : 'Install and start the compatible backend-profile Publisher runner before publishing.');
         }
+    }
+
+    /** Atomic routing inventory: only current registry bindings, never archived revisions. */
+    public static function writeCurrentBindings(): void
+    {
+        if (!isset(self::context()['stateNamespace'])) return;
+        $manager = '\\SmartCloud\\WPSuite\\Hub\\BackendProfiles';
+        if (!class_exists($manager) || !is_callable([$manager, 'configuredContexts'])) throw new \RuntimeException('Publisher binding registry unavailable.');
+        $root = dirname(self::legacyRuntimeRoot()) . '/backend-profiles/v2';
+        if (!is_dir($root) && !mkdir($root, 0700, true) && !is_dir($root)) throw new \RuntimeException('Publisher binding directory unavailable.');
+        $lock = fopen($root . '/current-bindings.lock', 'c');
+        if (!$lock || !flock($lock, LOCK_EX)) throw new \RuntimeException('Publisher binding registry lock unavailable.');
+        try {
+            $bindings = [];
+            foreach ($manager::configuredContexts() as $row) {
+                if (!isset($row['stateNamespace'])) continue;
+                if (!in_array($row['id'] ?? '', ['production', 'development'], true) || !is_int($row['bindingRevision'] ?? null) || $row['bindingRevision'] < 1 || $row['stateNamespace'] !== $row['id'] . '/bindings/' . $row['bindingRevision']) throw new \RuntimeException('Invalid current Publisher binding.');
+                $bindings[] = ['id' => $row['id'], 'bindingRevision' => $row['bindingRevision'], 'stateNamespace' => $row['stateNamespace']];
+            }
+            $current = self::context();
+            if (!in_array(['id' => $current['id'], 'bindingRevision' => $current['bindingRevision'], 'stateNamespace' => $current['stateNamespace']], $bindings, true)) throw new \RuntimeException('Current Publisher binding is stale.');
+            $tmp = $root . '/current-bindings.' . bin2hex(random_bytes(8)) . '.tmp';
+            $json = json_encode(['protocol' => self::RUNNER_PROTOCOL_V2, 'bindings' => $bindings], JSON_THROW_ON_ERROR);
+            if (file_put_contents($tmp, $json, LOCK_EX) !== strlen($json) || !chmod($tmp, 0600) || !rename($tmp, $root . '/current-bindings.json')) { @unlink($tmp); throw new \RuntimeException('Publisher binding registry write failed.'); }
+        } finally { flock($lock, LOCK_UN); fclose($lock); }
     }
 
     public static function initializationCheck($result, $owner = null)

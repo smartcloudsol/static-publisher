@@ -12,8 +12,8 @@
     "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "@smart-cloud/publisher-core": "^1.1.13",
-    "@smart-cloud/wpsuite-core": "^2.5.0",
+    "@smart-cloud/publisher-core": "^1.1.14",
+    "@smart-cloud/wpsuite-core": "^2.5.1",
     "@tabler/icons-react": "^3.46.0"
   },
   "peerDependencies": {

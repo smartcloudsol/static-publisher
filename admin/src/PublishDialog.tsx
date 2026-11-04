@@ -1,6 +1,9 @@
 import { Alert, Button, Group, Modal, Select, Stack, Text, TextInput } from "@mantine/core";
 import { __ } from "@wordpress/i18n";
 import { useState } from "react";
+import TargetedAssetOptions from "./TargetedAssetOptions";
+import UrlJobInput from "./UrlJobInput";
+import { parseUrlJobLines, urlJobFields } from "./url-job-input";
 
 const DOMAIN = "smartcloud-static-publisher";
 const DEFAULT_TARGET = "__configured_default__";
@@ -11,6 +14,8 @@ export type PublishRequest = {
   deploymentProfile?: string;
   contentSyncRuleId?: string;
   url?: string;
+  urls?: string[];
+  refreshAssets?: boolean;
 };
 type Target = { awsProfile?: string; targetOrigin?: string; s3?: { bucket?: string; prefix?: string } };
 export type PublishConfig = Target & {
@@ -27,19 +32,24 @@ type Props = {
   loading: boolean;
   loadError: string;
   onQueue: (request: PublishRequest) => Promise<void>;
+  onAssetHelp?: () => void;
+  onUrlHelp?: () => void;
 };
 
 /** These are launch options only. Saving a job never changes publisher configuration. */
-export default function PublishDialog({ opened, onClose, config, configured, pro, loading, loadError, onQueue }: Props) {
+export default function PublishDialog({ opened, onClose, config, configured, pro, loading, loadError, onQueue, onAssetHelp, onUrlHelp }: Props) {
   const [command, setCommand] = useState<Command>("publish");
   const [crawlMode, setCrawlMode] = useState<"full" | "incremental">("full");
   const [target, setTarget] = useState(DEFAULT_TARGET);
   const [rule, setRule] = useState("");
   const [url, setUrl] = useState("");
+  const [refreshAssets, setRefreshAssets] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const deploys = ["publish", "deploy", "invalidate", "content-sync"].includes(command);
   const crawls = command === "publish" || command === "crawl";
+  const targeted = command === "url" || command === "retry-timeouts";
+  const close = () => { setRefreshAssets(false); onClose(); };
   const profiles = config?.deploymentProfiles ?? {};
   const explicitTarget = target === DEFAULT_TARGET ? "" : target;
   const effectiveName = explicitTarget || config?.defaultDeploymentProfile || "";
@@ -53,7 +63,7 @@ export default function PublishDialog({ opened, onClose, config, configured, pro
     (deploys && explicitTarget !== "" && !pro) ||
     (crawls && crawlMode === "incremental" && !pro) ||
     (command === "content-sync" && (!pro || !validRule)) ||
-    (command === "url" && !url.trim());
+    (command === "url" && parseUrlJobLines(url).length === 0);
   const submit = async () => {
     if (pending || unavailable) return;
     setPending(true);
@@ -63,14 +73,15 @@ export default function PublishDialog({ opened, onClose, config, configured, pro
         ...(crawls ? { crawlMode } : {}),
         ...(deploys && explicitTarget ? { deploymentProfile: explicitTarget } : {}),
         ...(command === "content-sync" ? { contentSyncRuleId: rule } : {}),
-        ...(command === "url" ? { url: url.trim() } : {}),
+        ...(command === "url" ? urlJobFields(url) : {}),
+        ...(targeted && refreshAssets ? { refreshAssets: true } : {}),
       });
-      onClose();
+      close();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : __("Could not queue the publishing job.", DOMAIN));
     } finally { setPending(false); }
   };
-  return <Modal opened={opened} onClose={onClose} title={__("Publish site", DOMAIN)} centered size="lg" zIndex={100001}
+  return <Modal opened={opened} onClose={close} title={__("Publish site", DOMAIN)} centered size="lg" zIndex={100001}
     closeOnClickOutside={!pending} closeOnEscape={!pending} withCloseButton={!pending}>
     <Stack gap="md">
       <Text size="sm" c="dimmed">{__("Choose this run's options. Your saved publishing settings stay unchanged.", DOMAIN)}</Text>
@@ -78,11 +89,11 @@ export default function PublishDialog({ opened, onClose, config, configured, pro
       {loadError && <Alert color="red" role="alert">{loadError}</Alert>}
       {!loading && !loadError && !configured && <Alert color="yellow">{__("Complete and save publishing setup before starting a job.", DOMAIN)}</Alert>}
       <Select comboboxProps={{ withinPortal: false }} label={__("Task", DOMAIN)} value={command} allowDeselect={false} disabled={pending || loading}
-        onChange={value => { setCommand(value as Command); setRule(""); setError(""); }} data={[
+        onChange={value => { setCommand(value as Command); setRefreshAssets(false); setRule(""); setError(""); }} data={[
           { value: "publish", label: __("Export and publish", DOMAIN) },
           { value: "crawl", label: __("Export only", DOMAIN) },
           { value: "deploy", label: __("Deploy existing export", DOMAIN) },
-          { value: "url", label: __("Export one URL", DOMAIN) },
+          { value: "url", label: __("Export selected URLs", DOMAIN) },
           { value: "content-sync", label: __("Synchronize content (Pro)", DOMAIN), disabled: !pro },
           { value: "invalidate", label: __("Clear distribution cache", DOMAIN) },
           { value: "retry-timeouts", label: __("Retry timed-out pages", DOMAIN) },
@@ -91,8 +102,9 @@ export default function PublishDialog({ opened, onClose, config, configured, pro
         onChange={value => setCrawlMode(value as "full" | "incremental")}
         data={[{ value: "full", label: __("Full export", DOMAIN) },
           { value: "incremental", label: __("Incremental export (Pro)", DOMAIN), disabled: !pro }]} />}
-      {command === "url" && <TextInput label={__("URL path", DOMAIN)} value={url} placeholder="/blog/post/" disabled={pending || loading}
-        onChange={event => setUrl(event.currentTarget.value)} />}
+      {command === "url" && <UrlJobInput value={url} onChange={setUrl} disabled={pending || loading} onHelp={onUrlHelp} />}
+      {targeted && <TargetedAssetOptions checked={refreshAssets} onChange={setRefreshAssets}
+        disabled={pending || loading} onHelp={onAssetHelp} />}
       {deploys && <>
         <Select comboboxProps={{ withinPortal: false }} label={__("Target", DOMAIN)} value={target} allowDeselect={false} disabled={pending || loading}
           onChange={value => { setTarget(value || DEFAULT_TARGET); setRule(""); }} data={[
@@ -115,7 +127,7 @@ export default function PublishDialog({ opened, onClose, config, configured, pro
       {!pro && <Text size="sm" c="dimmed">{__("Incremental export, content sync and additional targets require an active Pro subscription.", DOMAIN)}</Text>}
       {error && <Alert color="red" role="alert">{error}</Alert>}
       <Group justify="flex-end">
-        <Button variant="default" onClick={onClose} disabled={pending || loading}>{__("Cancel", DOMAIN)}</Button>
+        <Button variant="default" onClick={close} disabled={pending || loading}>{__("Cancel", DOMAIN)}</Button>
         <Button onClick={() => void submit()} loading={pending} disabled={unavailable}>{__("Queue publishing job", DOMAIN)}</Button>
       </Group>
     </Stack>

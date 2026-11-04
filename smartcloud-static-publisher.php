@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.2.1
+ * Version:           1.2.3
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.2.1';
+const VERSION = '1.2.3';
 require_once __DIR__ . '/includes/class-backend-profile.php';
 
 final class Plugin
@@ -92,10 +92,11 @@ final class Plugin
         wp_mkdir_p($paths['runtime']);
         wp_mkdir_p($paths['logs']);
 
-        $this->getRuntimeNonce();
-
-        $this->writeJsonFile($paths['config'], $this->buildRuntimeConfig($this->getConfig()));
-        $this->writeJsonFile($paths['queue'], array());
+        if (BackendProfile::context() === null) {
+            $this->getRuntimeNonce();
+            $this->writeJsonFile($paths['config'], $this->buildRuntimeConfig($this->getConfig()));
+            $this->writeJsonFile($paths['queue'], array());
+        }
         if ($this->contentChangeJournal instanceof ContentChangeJournal) {
             $this->contentChangeJournal->installSchema();
         }
@@ -150,6 +151,11 @@ final class Plugin
 
     public function registerRestRoutes(): void
     {
+        register_rest_route(self::REST_NAMESPACE, '/backend-profile-binding', array(
+            'methods' => 'GET',
+            'permission_callback' => array($this, 'canReadBackendProfileBinding'),
+            'callback' => array($this, 'handleBackendProfileBinding'),
+        ));
         register_rest_route(self::REST_NAMESPACE, '/change-tokens', array(
             'methods' => 'POST',
             'permission_callback' => array($this, 'canReadChangeTokens'),
@@ -162,6 +168,29 @@ final class Plugin
         ));
         if ($this->contentChangeJournal instanceof ContentChangeJournal) {
             $this->contentChangeJournal->registerRestRoutes();
+        }
+    }
+
+    public function canReadBackendProfileBinding($request): bool
+    {
+        $token = $request->get_header('X-WPSuite-Render-Context');
+        $context = BackendProfile::context();
+        return is_string($token) && $token !== '' && is_array($context)
+            && rtrim(home_url('/'), '/') === 'https://dev.wpsuite.io'
+            && is_callable(['\\SmartCloud\\WPSuite\\Hub\\BackendProfiles', 'verifiedRenderContext'])
+            && \SmartCloud\WPSuite\Hub\BackendProfiles::verifiedRenderContext();
+    }
+
+    public function handleBackendProfileBinding($request)
+    {
+        if (!$this->canReadBackendProfileBinding($request)) return new \WP_Error('publisher_binding_forbidden', 'Publisher binding unavailable.', ['status' => 403]);
+        try {
+            $context = BackendProfile::context();
+            $config = $this->getConfig();
+            BackendProfile::assertTarget($config);
+            return new \WP_REST_Response(['id' => $context['id'], 'bindingRevision' => $context['bindingRevision'], ...(isset($context['stateNamespace']) ? ['stateNamespace' => $context['stateNamespace']] : []), 'target' => BackendProfile::targetShape($config)], 200, ['Cache-Control' => 'no-store']);
+        } catch (\Throwable $error) {
+            return new \WP_Error('publisher_binding_unavailable', 'Publisher binding unavailable.', ['status' => 409]);
         }
     }
 
@@ -635,6 +664,22 @@ final class Plugin
             );
         }
 
+        if (array_key_exists('refreshAssets', $data) && !is_bool($data['refreshAssets'])) {
+            return new \WP_Error(
+                'publisher_refresh_assets_invalid',
+                __('refreshAssets must be a boolean.', 'smartcloud-static-publisher'),
+                array('status' => 400)
+            );
+        }
+        $refreshAssets = ($data['refreshAssets'] ?? false) === true;
+        if ($refreshAssets && !in_array($command, array('url', 'retry-timeouts'), true)) {
+            return new \WP_Error(
+                'publisher_refresh_assets_unsupported',
+                __('Asset refresh is supported only for URL and retry-timeouts jobs.', 'smartcloud-static-publisher'),
+                array('status' => 400)
+            );
+        }
+
         $crawlMode = isset($data['crawlMode']) ? sanitize_text_field((string) $data['crawlMode']) : 'full';
         if (!in_array($crawlMode, array('full', 'incremental'), true)) {
             $crawlMode = 'full';
@@ -644,14 +689,39 @@ final class Plugin
         }
 
         $url = '';
+        $urls = null;
+        if (array_key_exists('urls', $data)) {
+            if ($command !== 'url' || !is_array($data['urls']) || !array_is_list($data['urls'])) {
+                return new \WP_Error('publisher_urls_invalid', __('urls must be an array for a URL job.', 'smartcloud-static-publisher'), array('status' => 400));
+            }
+            if (isset($data['url']) && (!is_string($data['url']) || trim($data['url']) !== '')) {
+                return new \WP_Error('publisher_urls_ambiguous', __('Provide either url or urls, not both.', 'smartcloud-static-publisher'), array('status' => 400));
+            }
+            $urls = array();
+            $seenUrls = array();
+            $urlBytes = 0;
+            foreach ($data['urls'] as $entry) {
+                if (!is_string($entry)) {
+                    return new \WP_Error('publisher_urls_invalid', __('Every URL must be a string.', 'smartcloud-static-publisher'), array('status' => 400));
+                }
+                $entry = trim($entry);
+                if ($entry === '') continue;
+                if (preg_match('/[\x00-\x1f\x7f]/', $entry) || str_starts_with($entry, '@')) {
+                    return new \WP_Error('publisher_urls_invalid', __('URLs cannot contain control characters or start with @.', 'smartcloud-static-publisher'), array('status' => 400));
+                }
+                if (isset($seenUrls[$entry])) continue;
+                $seenUrls[$entry] = true;
+                $urls[] = $entry;
+                $urlBytes += strlen($entry);
+                if (count($urls) > 500 || $urlBytes > 65536) {
+                    return new \WP_Error('publisher_urls_limit', __('At most 500 unique URLs and 64 KiB are allowed.', 'smartcloud-static-publisher'), array('status' => 400));
+                }
+            }
+        }
         if ($command === 'url') {
             $url = isset($data['url']) ? sanitize_text_field((string) $data['url']) : '';
-            if ($url === '') {
-                return new \WP_Error(
-                    'publisher_url_required',
-                    __('URL path is required for the url command.', 'smartcloud-static-publisher'),
-                    array('status' => 400)
-                );
+            if ($url === '' && empty($urls)) {
+                return new \WP_Error('publisher_url_required', __('At least one URL path is required.', 'smartcloud-static-publisher'), array('status' => 400));
             }
         }
 
@@ -681,10 +751,7 @@ final class Plugin
 
         $paths = $this->getRuntimePaths();
         wp_mkdir_p($paths['runtime']);
-        $runtimeConfig = $this->buildRuntimeConfig($this->getConfig());
-        BackendProfile::assertTarget($runtimeConfig);
-        BackendProfile::assertRunnerReady();
-        $this->writeJsonFile($paths['config'], $runtimeConfig);
+        $runtimeConfig = $this->persistRuntimeConfig($this->getConfig());
 
         $contentSyncContext = null;
         if ($command === 'content-sync') {
@@ -715,6 +782,12 @@ final class Plugin
             'createdAt' => gmdate('c'),
             'createdBy' => max(0, $userId),
         );
+        if ($urls !== null) {
+            $job['urls'] = $urls;
+        }
+        if ($refreshAssets) {
+            $job['refreshAssets'] = true;
+        }
         if (isset($runtimeConfig['backendProfile'])) {
             $job['backendProfile'] = $runtimeConfig['backendProfile'];
             $job['runtimeConfigSnapshot'] = $runtimeConfig;
@@ -1460,7 +1533,7 @@ final class Plugin
     {
         $runtime = $this->stripLocalOnlyConfigFromRuntimeConfig($config);
         $runtime['wpsuite'] = $this->getWpSuiteRuntimeConfig();
-        $profile = BackendProfile::runtimeMetadata();
+        $profile = BackendProfile::runtimeMetadata($runtime);
         if ($profile !== null) $runtime['backendProfile'] = $profile;
 
         $override = $this->sanitizeDeploymentProfileName($deploymentTargetOverride);
@@ -1470,6 +1543,29 @@ final class Plugin
             unset($runtime['deploymentTargetOverride']);
         }
 
+        return $runtime;
+    }
+
+    /** Persist only validated profile configs; ordinary installations retain the legacy path. */
+    public function persistRuntimeConfig(array $config): array
+    {
+        $runtime = $this->buildRuntimeConfig($config);
+        $paths = $this->getRuntimePaths();
+        if (!isset($runtime['backendProfile'])) {
+            $this->writeJsonFile($paths['config'], $runtime);
+            return $runtime;
+        }
+        BackendProfile::assertTarget($runtime);
+        BackendProfile::assertRunnerReady();
+        if (!wp_mkdir_p($paths['runtime'])) throw new \RuntimeException('Publisher runtime directory unavailable.');
+        $encoded = wp_json_encode($runtime, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        if (!is_string($encoded)) throw new \RuntimeException('Publisher runtime configuration invalid.');
+        $tmp = $paths['config'] . '.' . bin2hex(random_bytes(8)) . '.tmp';
+        if (file_put_contents($tmp, $encoded, LOCK_EX) !== strlen($encoded) || !chmod($tmp, 0600) || !rename($tmp, $paths['config'])) {
+            @unlink($tmp); throw new \RuntimeException('Publisher runtime configuration could not be persisted.');
+        }
+        if ($this->readJsonFile($paths['config']) !== $runtime) throw new \RuntimeException('Publisher runtime configuration verification failed.');
+        BackendProfile::writeCurrentBindings();
         return $runtime;
     }
 
@@ -4673,8 +4769,15 @@ final class Plugin
             $crawlArgs = ' --crawl-mode incremental';
         } elseif ($command === 'retry-timeouts') {
             $crawlArgs = ' --retry-timeouts';
-        } elseif ($command === 'url' && $url !== '') {
-            $crawlArgs = ' --url ' . escapeshellarg($url);
+        } elseif ($command === 'url') {
+            $urls = isset($job['urls']) && is_array($job['urls']) ? $job['urls'] : ($url !== '' ? array($url) : array());
+            foreach ($urls as $item) {
+                if (is_string($item) && trim($item) !== '') $crawlArgs .= ' --url ' . escapeshellarg(trim($item));
+            }
+        }
+
+        if (in_array($command, array('url', 'retry-timeouts'), true) && ($job['refreshAssets'] ?? false) === true) {
+            $crawlArgs .= ' --refresh-assets';
         }
 
         $crawlCommand = 'PUBLISHER_CONFIG=./publisher.config.json npx @smart-cloud/publisher-exporter crawl' . $crawlArgs;
@@ -4716,8 +4819,15 @@ final class Plugin
             $crawlArgs = ' --crawl-mode incremental';
         } elseif ($command === 'retry-timeouts') {
             $crawlArgs = ' --retry-timeouts';
-        } elseif ($command === 'url' && $url !== '') {
-            $crawlArgs = ' --url ' . $this->quotePowerShellArgument($url);
+        } elseif ($command === 'url') {
+            $urls = isset($job['urls']) && is_array($job['urls']) ? $job['urls'] : ($url !== '' ? array($url) : array());
+            foreach ($urls as $item) {
+                if (is_string($item) && trim($item) !== '') $crawlArgs .= ' --url ' . $this->quotePowerShellArgument(trim($item));
+            }
+        }
+
+        if (in_array($command, array('url', 'retry-timeouts'), true) && ($job['refreshAssets'] ?? false) === true) {
+            $crawlArgs .= ' --refresh-assets';
         }
 
         $prefix = '$env:PUBLISHER_CONFIG="./publisher.config.json"; ';
