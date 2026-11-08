@@ -1,7 +1,7 @@
 {
   "name": "@smart-cloud/publisher-admin",
   "private": true,
-  "version": "1.0.15",
+  "version": "1.0.16",
   "type": "module",
   "scripts": {
     "dev": "vite --host",
@@ -12,8 +12,8 @@
     "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "@smart-cloud/publisher-core": "^1.1.14",
-    "@smart-cloud/wpsuite-core": "^2.5.1",
+    "@smart-cloud/publisher-core": "^1.1.15",
+    "@smart-cloud/wpsuite-core": "^2.5.2",
     "@tabler/icons-react": "^3.46.0"
   },
   "peerDependencies": {
@@ -86,6 +86,9 @@
     "undici": "^7.28.0"
   },
   "overrides": {
+    "ajv-keywords@^5": {
+      "ajv": "^8.20.0"
+    },
     "proxy-addr": "2.0.8",
     "shell-quote": "1.11.0",
     "@humanfs/node": "^0.16.8",
@@ -108,7 +111,10 @@
       ".": "^13.4.1",
       "ws": "^7.5.11"
     },
-    "markdownlint-cli": "^0.49.1",
+    "markdownlint-cli": {
+      ".": "^0.49.1",
+      "smol-toml": "^1.8.1"
+    },
     "nanoid": "^3.3.18",
     "picomatch": "^4.0.5",
     "postcss-selector-parser": "^7.1.6",
