@@ -16,7 +16,7 @@ function _doing_it_wrong(mixed ...$args): void { throw new RuntimeException('Inv
 function get_current_blog_id(): int { return 7; }
 function is_multisite(): bool { return false; }
 function get_site_option(string $name, mixed $default = false): mixed {
-    return $name === 'smartcloud_static_publisher_content_journal_schema' ? '3' : $default;
+    return $name === 'smartcloud_static_publisher_content_journal_schema' ? '4' : $default;
 }
 function sanitize_key(string $value): string { return preg_replace('/[^a-z0-9_-]/', '', strtolower($value)); }
 function absint(mixed $value): int { return abs((int) $value); }
@@ -42,11 +42,20 @@ class WP_REST_Response {
 final class ContentSyncRealPrepareFixture extends wpdb {
     public array $sql = array();
     public array $consumer = array();
-    public function __construct() { $this->prefix = 'wp_'; }
+    public string $lastRowQuery = '';
+    public string $lastColumnQuery = '';
+    public function __construct() { $this->prefix = 'wp_'; $this->term_taxonomy = 'wp_term_taxonomy'; }
     public function _real_escape($value) { return addslashes((string) $value); }
     public function add_placeholder_escape($query) { return $query; }
-    public function get_row($query = null, $output = OBJECT, $y = 0) { return $this->consumer; }
+    public function get_var($query = null, $x = 0, $y = 0) {
+        if ($query === 'SELECT DATABASE()') return 'sql_prepare_fixture';
+        if (str_contains((string) $query, 'CONNECTION_ID()')) return 7;
+        if (str_contains((string) $query, 'GET_LOCK(') || str_contains((string) $query, 'RELEASE_LOCK(')) return 1;
+        return 0;
+    }
+    public function get_row($query = null, $output = OBJECT, $y = 0) { $this->lastRowQuery = (string) $query; return str_contains((string) $query, 'journal_scopes') ? array('head' => 0, 'floor' => 0) : $this->consumer; }
     public function get_results($query = null, $output = OBJECT) { $this->sql[] = $query; return array(); }
+    public function get_col($query = null, $x = 0) { $this->lastColumnQuery = (string) $query; return array(); }
 }
 function sql_expect(bool $value, string $message): void {
     if (!$value) { throw new RuntimeException($message); }
@@ -77,5 +86,17 @@ foreach (array(false, true) as $subsites) {
         sql_expect(!preg_match('/%[ids]/', $sql), 'No unresolved SQL placeholders reach execution.');
         sql_expect($response->get_data()['nextSequence'] === 11 && !$response->get_data()['hasMore'], 'Empty-page cursor semantics are preserved.');
     }
+}
+$readConsumer = (new ReflectionClass($journal))->getMethod('readConsumer');
+$readConsumer->invoke($journal, "bad'consumer");
+sql_expect(str_contains($wpdb->lastRowQuery, 'FROM `wp_smartcloud_static_publisher_content_consumers`'), 'Consumer table is a prepared identifier.');
+sql_expect(str_contains($wpdb->lastRowQuery, "consumer_id = 'bad\\'consumer'"), 'Consumer identifier is escaped as a value.');
+$termLookup = (new ReflectionClass($journal))->getMethod('termsFromTermTaxonomyIds');
+foreach (array(array(11), array(11, 12)) as $ids) {
+    $termLookup->invoke($journal, $ids, 'category');
+    sql_expect(str_contains($wpdb->lastColumnQuery, 'FROM `wp_term_taxonomy`'), 'Taxonomy table is a prepared identifier.');
+    sql_expect(str_contains($wpdb->lastColumnQuery, "taxonomy = 'category'"), 'Taxonomy is bound as a value.');
+    sql_expect(str_contains($wpdb->lastColumnQuery, 'IN (' . implode(', ', $ids) . ')'), 'Exactly one bound placeholder is used per term ID.');
+    sql_expect(!preg_match('/%[ids]/', $wpdb->lastColumnQuery), 'No unresolved taxonomy query placeholders reach execution.');
 }
 echo "Publisher real WordPress SQL identifier/value alignment: PASS\n";

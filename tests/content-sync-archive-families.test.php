@@ -46,9 +46,16 @@ class WP_Rewrite { public string $pagination_base = 'page'; }
 class ArchiveTestDatabase
 {
     public string $prefix = 'wp_';
+    public string $base_prefix = 'wp_';
     public string $term_taxonomy = 'wp_term_taxonomy';
     public array $inserted = array();
-    public function prepare(string $query, array $values): string { return $query; }
+    public function prepare(string $query, ...$values): string { return $query; }
+    public function get_var(string $query) {
+        if ($query === 'SELECT DATABASE()') return 'archive_fixture';
+        if (str_contains($query, 'CONNECTION_ID()')) return 7;
+        if (str_contains($query, 'GET_LOCK(') || str_contains($query, 'RELEASE_LOCK(')) return 1;
+        return 0;
+    }
     public function get_col(string $query): array { return array(11); }
     public function insert(string $table, array $data, array $formats): void { $this->inserted[] = $data; }
 }
@@ -97,7 +104,7 @@ function get_term(int $termId, string $taxonomy): WP_Term { return new WP_Term($
 function get_post(int $postId): WP_Post { return new WP_Post(); }
 function get_taxonomy(string $taxonomy): WP_Taxonomy { return new WP_Taxonomy($taxonomy); }
 function get_permalink($post): string { return home_url('/reviews/item/'); }
-function get_site_option(string $name, $default = false) { return $name === 'smartcloud_static_publisher_content_journal_schema' ? '3' : $default; }
+function get_site_option(string $name, $default = false) { return $name === 'smartcloud_static_publisher_content_journal_schema' ? '4' : $default; }
 function current_time(string $type, bool $gmt): string { return '2026-09-07 09:52:52'; }
 function wp_json_encode($value): string { return json_encode($value, JSON_THROW_ON_ERROR); }
 function archive_expect(bool $value, string $message): void

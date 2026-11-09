@@ -143,7 +143,9 @@ final class BackendProfile
         $manager = '\\SmartCloud\\WPSuite\\Hub\\BackendProfiles';
         if (!class_exists($manager) || !is_callable([$manager, 'configuredContexts'])) throw new \RuntimeException('Publisher binding registry unavailable.');
         $root = dirname(self::legacyRuntimeRoot()) . '/backend-profiles/v2';
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Local runner coordination requires private modes, exclusive locks or atomic filesystem operations.
         if (!is_dir($root) && !mkdir($root, 0700, true) && !is_dir($root)) throw new \RuntimeException('Publisher binding directory unavailable.');
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Local runner coordination requires private modes, exclusive locks or atomic filesystem operations.
         $lock = fopen($root . '/current-bindings.lock', 'c');
         if (!$lock || !flock($lock, LOCK_EX)) throw new \RuntimeException('Publisher binding registry lock unavailable.');
         try {
@@ -157,7 +159,9 @@ final class BackendProfile
             if (!in_array(['id' => $current['id'], 'bindingRevision' => $current['bindingRevision'], 'stateNamespace' => $current['stateNamespace']], $bindings, true)) throw new \RuntimeException('Current Publisher binding is stale.');
             $tmp = $root . '/current-bindings.' . bin2hex(random_bytes(8)) . '.tmp';
             $json = json_encode(['protocol' => self::RUNNER_PROTOCOL_V2, 'bindings' => $bindings], JSON_THROW_ON_ERROR);
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod,WordPress.WP.AlternativeFunctions.rename_rename,WordPress.WP.AlternativeFunctions.unlink_unlink -- Local runner coordination requires private modes, exclusive locks or atomic filesystem operations.
             if (file_put_contents($tmp, $json, LOCK_EX) !== strlen($json) || !chmod($tmp, 0600) || !rename($tmp, $root . '/current-bindings.json')) { @unlink($tmp); throw new \RuntimeException('Publisher binding registry write failed.'); }
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Local runner coordination requires private modes, exclusive locks or atomic filesystem operations.
         } finally { flock($lock, LOCK_UN); fclose($lock); }
     }
 
@@ -170,20 +174,26 @@ final class BackendProfile
             self::assertLegacyIdle();
             return Plugin::instance()->withQueueMutationLock(static function () {
                 $root = self::legacyRuntimeRoot();
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Local runner coordination requires private modes, exclusive locks or atomic filesystem operations.
                 if (!is_dir($root) && !mkdir($root, 0700, true) && !is_dir($root)) throw new \RuntimeException('The legacy publishing runtime could not be fenced.');
                 $fencePath = $root . '/export.lock';
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Local runner coordination requires private modes, exclusive locks or atomic filesystem operations.
                 $fence = @fopen($fencePath, 'x');
                 if ($fence === false && !self::legacyFence($fencePath)) throw new \RuntimeException('Stop the legacy Publisher runner before enabling backend profiles.');
                 if (is_resource($fence)) {
+                    // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- Local runner coordination requires private modes, exclusive locks or atomic filesystem operations.
                     $written = fwrite($fence, json_encode(array('protocol' => self::RUNNER_PROTOCOL, 'purpose' => 'backend-profile-legacy-fence', 'pid' => getmypid(), 'startedAt' => gmdate('c'))));
+                    // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Local runner coordination requires private modes, exclusive locks or atomic filesystem operations.
                     fflush($fence); fclose($fence);
                     if (!$written) throw new \RuntimeException('The legacy publishing fence could not be persisted.');
                 }
                 // This lock is intentionally never automatically removed, including DB failure.
                 // It uses the old CLI's exclusive-create protocol to close the cron startup race.
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Local runner coordination requires private modes, exclusive locks or atomic filesystem operations.
                 $queueLock = @fopen($root . '/queue-mutation.lock', 'x');
                 if ($queueLock === false) throw new \RuntimeException('The legacy publishing queue is busy; initialization remains fenced.');
                 try {
+                    // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Local runner coordination requires private modes, exclusive locks or atomic filesystem operations.
                     fclose($queueLock);
                     $queueLock = null;
                     // Ignore our queue lock only while holding it; export.lock remains fenced.
@@ -201,11 +211,14 @@ final class BackendProfile
                     $quarantine = $root . '/config.legacy-drained.json';
                     if (is_file($source)) {
                         if (file_exists($quarantine)) throw new \RuntimeException('A legacy config appeared after quarantine; review it before retrying.');
+                        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod,WordPress.WP.AlternativeFunctions.rename_rename -- Local runner coordination requires private modes, exclusive locks or atomic filesystem operations.
                         if (!chmod($source, 0600) || !rename($source, $quarantine)) throw new \RuntimeException('The legacy publishing configuration could not be quarantined.');
                     }
                     return true;
                 } finally {
+                    // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Local runner coordination requires private modes, exclusive locks or atomic filesystem operations.
                     if (is_resource($queueLock)) fclose($queueLock);
+                    // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Local runner coordination requires private modes, exclusive locks or atomic filesystem operations.
                     @unlink($root . '/queue-mutation.lock');
                 }
             });

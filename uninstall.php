@@ -54,14 +54,14 @@ function smartcloud_static_publisher_uninstall_site(): void
 
     global $wpdb;
     $table = $wpdb->prefix . 'smartcloud_static_publisher_content_events';
-    $wpdb->query("DROP TABLE IF EXISTS {$table}"); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.SchemaChange -- Explicit plugin-owned uninstall cleanup.
+    $wpdb->query($wpdb->prepare("DROP TABLE IF EXISTS %i", $table)); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.DirectDatabaseQuery.SchemaChange -- Explicit plugin-owned uninstall cleanup.
     $consumers_table = $wpdb->prefix . 'smartcloud_static_publisher_content_consumers';
-    $wpdb->query("DROP TABLE IF EXISTS {$consumers_table}"); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.SchemaChange -- Explicit plugin-owned uninstall cleanup.
+    $wpdb->query($wpdb->prepare("DROP TABLE IF EXISTS %i", $consumers_table)); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.DirectDatabaseQuery.SchemaChange -- Explicit plugin-owned uninstall cleanup.
     foreach (array(
         '_smartcloud_static_publisher_last_public_projection',
         '_smartcloud_static_publisher_last_public_slug',
     ) as $meta_key) {
-        $wpdb->delete($wpdb->postmeta, array('meta_key' => $meta_key), array('%s')); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Explicit plugin-owned uninstall cleanup.
+        $wpdb->delete($wpdb->postmeta, array('meta_key' => $meta_key), array('%s')); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- Remove the plugin-owned metadata on uninstall.
     }
 
     smartcloud_static_publisher_remove_storage();

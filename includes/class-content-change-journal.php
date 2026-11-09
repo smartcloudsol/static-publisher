@@ -3,6 +3,8 @@
 namespace SmartCloud\WPSuite\StaticPublisher;
 
 require_once __DIR__ . '/class-backend-profile.php';
+require_once __DIR__ . '/class-journal-retention.php';
+require_once __DIR__ . '/class-journal-maintenance.php';
 
 if (!defined('ABSPATH')) {
     exit;
@@ -16,7 +18,7 @@ if (!defined('ABSPATH')) {
  */
 final class ContentChangeJournal
 {
-    private const SCHEMA_VERSION = '3';
+    private const SCHEMA_VERSION = '4';
     private const SCHEMA_OPTION = 'smartcloud_static_publisher_content_journal_schema';
     private const CONSUMERS_OPTION = 'smartcloud_static_publisher_content_sync_consumers';
     private const RETENTION_FLOOR_OPTION = 'smartcloud_static_publisher_content_journal_retention_floor';
@@ -36,6 +38,7 @@ final class ContentChangeJournal
     private array $preRestoreSlugs = array();
 
     private int $lastPostEventSequence = 0;
+    private ?JournalRetention $retention = null;
 
     public function __construct(Plugin $plugin)
     {
@@ -55,6 +58,8 @@ final class ContentChangeJournal
         add_action('delete_option_sticky_posts', array($this, 'captureStickyDelete'), 10, 1);
         add_action('smartcloud_static_publisher_resource_changed_v1', array($this, 'captureResourceChange'), 10, 1);
         add_filter(self::RELEASE_GATE_STATE_FILTER, array($this, 'provideReleaseGateState'), 10, 2);
+        $this->retention()->registerHooks();
+        (new JournalMaintenance($this->retention()))->registerCommand();
     }
 
     public function captureResourceChange($change): void
@@ -113,6 +118,16 @@ final class ContentChangeJournal
      * @param mixed $query Optional consumerId/blogId/postType/postId selectors.
      */
     public function provideReleaseGateState($state = null, $query = array()): array
+    {
+        try {
+            return $this->withJournalLock(fn() => $this->provideReleaseGateStateLocked($state, $query));
+        } catch (\Throwable $error) {
+            return array('contractVersion' => 1, 'provider' => 'smartcloud-static-publisher', 'available' => false,
+                'lastPostEventSequence' => 0, 'configuredConsumerIds' => array(), 'verifiedReleases' => array());
+        }
+    }
+
+    private function provideReleaseGateStateLocked($state = null, $query = array()): array
     {
         $query = is_array($query) ? $query : array();
         $consumerId = $this->sanitizeConsumerId($query['consumerId'] ?? '');
@@ -224,8 +239,9 @@ final class ContentChangeJournal
             PRIMARY KEY  (sequence),
             KEY blog_type_sequence (blog_id, post_type, sequence),
             KEY post_type_sequence (post_type, sequence),
-            KEY post_id_sequence (blog_id, post_id, sequence)
-        ) {$charsetCollate};";
+            KEY post_id_sequence (blog_id, post_id, sequence),
+            KEY recorded_sequence (recorded_gmt, sequence)
+        ) ENGINE=InnoDB {$charsetCollate};";
 
         dbDelta($sql);
         $consumersSql = "CREATE TABLE {$consumersTable} (
@@ -239,11 +255,14 @@ final class ContentChangeJournal
             acknowledged_gmt datetime NOT NULL,
             PRIMARY KEY  (consumer_id),
             KEY scope_sequence (scope_fingerprint(64), sequence)
-        ) {$charsetCollate};";
+        ) ENGINE=InnoDB {$charsetCollate};";
         dbDelta($consumersSql);
         $mainBlogId = is_multisite() ? (int) get_main_site_id() : (int) get_current_blog_id();
-        $wpdb->query($wpdb->prepare("UPDATE {$table} SET blog_id = %d WHERE blog_id = 0", $mainBlogId));
-        $wpdb->query($wpdb->prepare("UPDATE {$consumersTable} SET root_blog_id = %d WHERE root_blog_id = 0", $mainBlogId));
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Schema migration updates the owned journal table directly.
+        $wpdb->query($wpdb->prepare("UPDATE %i SET blog_id = %d WHERE blog_id = 0", $table, $mainBlogId));
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Schema migration updates the owned consumer table directly.
+        $wpdb->query($wpdb->prepare("UPDATE %i SET root_blog_id = %d WHERE root_blog_id = 0", $consumersTable, $mainBlogId));
+        $this->retention()->installSchema();
         update_site_option(self::SCHEMA_OPTION, self::SCHEMA_VERSION);
     }
 
@@ -445,6 +464,15 @@ final class ContentChangeJournal
 
     public function handleHead(\WP_REST_Request $request): \WP_REST_Response
     {
+        try {
+            return $this->withJournalLock(fn() => $this->handleHeadLocked($request));
+        } catch (\Throwable $error) {
+            return $this->errorResponse('journal-unavailable', __('The content journal is temporarily unavailable; no cursor was advanced.', 'smartcloud-static-publisher'), 503);
+        }
+    }
+
+    private function handleHeadLocked(\WP_REST_Request $request): \WP_REST_Response
+    {
         $data = $this->requestData($request);
         $postTypes = $this->sanitizePostTypes($data['postTypes'] ?? array(), !empty($data['includeSubsites']));
         if (empty($postTypes)) {
@@ -467,9 +495,9 @@ final class ContentChangeJournal
             return $this->errorResponse('baseline-required', __('The content-sync consumer scope or verified release baseline changed.', 'smartcloud-static-publisher'), 409);
         }
 
-        $retentionFloor = max(0, (int) get_site_option(self::RETENTION_FLOOR_OPTION, 0));
+        $retentionFloor = $this->retention()->scopeState($postTypes, $includeSubsites, (int) get_current_blog_id())['retentionFloor'];
         $committedSequence = is_array($consumer) ? max(0, (int) ($consumer['sequence'] ?? 0)) : 0;
-        if ($committedSequence < $retentionFloor) {
+        if ($consumerId !== '' && $committedSequence < $retentionFloor) {
             return $this->errorResponse('baseline-required', __('The content-sync consumer cursor is older than retained journal history.', 'smartcloud-static-publisher'), 409);
         }
 
@@ -485,6 +513,15 @@ final class ContentChangeJournal
     }
 
     public function handleEvents(\WP_REST_Request $request): \WP_REST_Response
+    {
+        try {
+            return $this->withJournalLock(fn() => $this->handleEventsLocked($request));
+        } catch (\Throwable $error) {
+            return $this->errorResponse('journal-unavailable', __('The content journal is temporarily unavailable; no cursor was advanced.', 'smartcloud-static-publisher'), 503);
+        }
+    }
+
+    private function handleEventsLocked(\WP_REST_Request $request): \WP_REST_Response
     {
         global $wpdb;
 
@@ -509,8 +546,8 @@ final class ContentChangeJournal
 
         $afterSequence = max(0, (int) ($data['afterSequence'] ?? 0));
         $throughSequence = max($afterSequence, (int) ($data['throughSequence'] ?? $this->headSequence($postTypes, $includeSubsites)));
-        $retentionFloor = max(0, (int) get_site_option(self::RETENTION_FLOOR_OPTION, 0));
-        if ($afterSequence < $retentionFloor) {
+        $retentionFloor = $this->retention()->scopeState($postTypes, $includeSubsites, (int) get_current_blog_id())['retentionFloor'];
+        if ($afterSequence < $retentionFloor || (int) ($consumer['sequence'] ?? 0) < $retentionFloor) {
             return $this->errorResponse('baseline-required', __('The requested content journal cursor is older than retained history.', 'smartcloud-static-publisher'), 409);
         }
         $limit = min(250, max(1, (int) ($data['limit'] ?? 100)));
@@ -524,11 +561,10 @@ final class ContentChangeJournal
         $params = array_merge($params, array($afterSequence, $throughSequence, $limit));
         // Only generated %s placeholders and the fixed blog-scope clause vary;
         // every identifier and value remains a separate prepare argument.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber -- Journal page is read fresh under lock; scope contains only generated placeholders and a fixed clause.
         $rows = $wpdb->get_results($wpdb->prepare(
-            "SELECT sequence, blog_id, recorded_gmt, post_id, post_type, operation, before_projection, after_projection, correlation_id
-             FROM %i
-             WHERE {$where} AND sequence > %d AND sequence <= %d
-             ORDER BY sequence ASC LIMIT %d",
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Scope contains only generated %s placeholders and a fixed blog clause; all values are bound.
+            "SELECT sequence, blog_id, recorded_gmt, post_id, post_type, operation, before_projection, after_projection, correlation_id FROM %i WHERE {$where} AND sequence > %d AND sequence <= %d ORDER BY sequence ASC LIMIT %d",
             $params
         ), ARRAY_A);
         $items = array_map(array($this, 'hydrateEventRow'), is_array($rows) ? $rows : array());
@@ -544,6 +580,15 @@ final class ContentChangeJournal
     }
 
     public function handleAcknowledge(\WP_REST_Request $request): \WP_REST_Response
+    {
+        try {
+            return $this->withJournalLock(fn() => $this->handleAcknowledgeLocked($request));
+        } catch (\Throwable $error) {
+            return $this->errorResponse('journal-unavailable', __('The content journal is temporarily unavailable; no cursor was advanced.', 'smartcloud-static-publisher'), 503);
+        }
+    }
+
+    private function handleAcknowledgeLocked(\WP_REST_Request $request): \WP_REST_Response
     {
         global $wpdb;
 
@@ -575,14 +620,20 @@ final class ContentChangeJournal
         }
 
         $committed = max(0, (int) ($existing['sequence'] ?? 0));
+        $retentionFloor = $this->retention()->scopeState($postTypes, $includeSubsites, (int) get_current_blog_id())['retentionFloor'];
+        if ($committed < $retentionFloor) {
+            return $this->errorResponse('baseline-required', __('The content-sync cursor is older than retained history and requires a new verified full-publish baseline.', 'smartcloud-static-publisher'), 409);
+        }
         if ($expectedSequence !== $committed || $sequence < $expectedSequence) {
             return $this->errorResponse('cursor-conflict', __('The content-sync cursor changed or would move backward.', 'smartcloud-static-publisher'), 409);
         }
 
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic compare-and-set must use the current durable cursor.
         $updated = $wpdb->query($wpdb->prepare(
-            "UPDATE {$this->consumersTableName()}
+            "UPDATE %i
              SET sequence = %d, acknowledged_gmt = %s
              WHERE consumer_id = %s AND scope_fingerprint = %s AND baseline_id = %s AND sequence = %d",
+            $this->consumersTableName(),
             $sequence,
             current_time('mysql', true),
             $consumerId,
@@ -615,6 +666,15 @@ final class ContentChangeJournal
 
     public function handleEstablishBaseline(\WP_REST_Request $request): \WP_REST_Response
     {
+        try {
+            return $this->withJournalLock(fn() => $this->handleEstablishBaselineLocked($request));
+        } catch (\Throwable $error) {
+            return $this->errorResponse('journal-unavailable', __('The content journal is temporarily unavailable; no cursor was advanced.', 'smartcloud-static-publisher'), 503);
+        }
+    }
+
+    private function handleEstablishBaselineLocked(\WP_REST_Request $request): \WP_REST_Response
+    {
         global $wpdb;
 
         $data = $this->requestData($request);
@@ -634,11 +694,12 @@ final class ContentChangeJournal
         $headSequence = $this->headSequence($postTypes, $includeSubsites);
         $hasSequence = array_key_exists('sequence', $data) && is_numeric($data['sequence']);
         $sequence = $hasSequence ? max(0, (int) $data['sequence']) : -1;
-        $retentionFloor = max(0, (int) get_site_option(self::RETENTION_FLOOR_OPTION, 0));
+        $retentionFloor = $this->retention()->scopeState($postTypes, $includeSubsites, (int) get_current_blog_id())['retentionFloor'];
         if (!$hasSequence || $sequence > $headSequence || $sequence < $retentionFloor) {
             return $this->errorResponse('invalid-baseline-sequence', __('The verified release cutoff must be within retained journal history and cannot exceed the current head.', 'smartcloud-static-publisher'), 409);
         }
         $postTypesJson = wp_json_encode($postTypes);
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- A verified baseline must be persisted atomically in the journal table.
         $result = $wpdb->replace(
             $this->consumersTableName(),
             array(
@@ -973,6 +1034,7 @@ final class ContentChangeJournal
             $taxonomy = sanitize_key((string) ($family['taxonomy'] ?? ''));
             $termId = absint($family['termId'] ?? 0);
             if ($taxonomy !== '' && $termId > 0) {
+                // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_tax_query -- Bounded archive membership probe targets one sanitized taxonomy and term.
                 $queryArgs['tax_query'] = array(array('taxonomy' => $taxonomy, 'field' => 'term_id', 'terms' => array($termId)));
             }
         } elseif ($kind === 'author') {
@@ -1049,7 +1111,23 @@ final class ContentChangeJournal
             && $candidatePort === $sitePort;
     }
 
+    private function retention(): JournalRetention
+    {
+        return $this->retention ?? ($this->retention = new JournalRetention($this->plugin ?? null));
+    }
+
+    private function withJournalLock(callable $callback)
+    {
+        $this->maybeInstallSchema();
+        return $this->retention()->withLock($callback);
+    }
+
     private function appendEvent(int $postId, string $postType, string $operation, ?array $before, ?array $after): void
+    {
+        $this->withJournalLock(fn() => $this->appendEventLocked($postId, $postType, $operation, $before, $after));
+    }
+
+    private function appendEventLocked(int $postId, string $postType, string $operation, ?array $before, ?array $after): void
     {
         global $wpdb;
 
@@ -1058,6 +1136,7 @@ final class ContentChangeJournal
         $postType = sanitize_key($postType);
         $operation = sanitize_key($operation);
         $correlationId = apply_filters('smartcloud_static_publisher_content_correlation_id', '', $postId, $operation);
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Append the journal event directly to preserve the durable sequence.
         $inserted = $wpdb->insert(
             $this->tableName(),
             array(
@@ -1078,6 +1157,7 @@ final class ContentChangeJournal
         }
 
         $this->lastPostEventSequence = $sequence;
+        // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.DynamicHooknameFound -- The constant is a fixed smartcloud_static_publisher-prefixed public hook.
         do_action(self::CONTENT_EVENT_ACTION, array(
             'contractVersion' => 1,
             'sequence' => $sequence,
@@ -1098,6 +1178,7 @@ final class ContentChangeJournal
         bool $includeSubsites
     ): void {
         $profile = BackendProfile::context();
+        // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.DynamicHooknameFound -- The constant is a fixed smartcloud_static_publisher-prefixed public hook.
         do_action(self::PUBLIC_RELEASE_ACTION, array(
             'backendProfile' => $profile ? array('id' => $profile['id'], 'bindingRevision' => $profile['bindingRevision']) : null,
             'contractVersion' => 1,
@@ -1117,9 +1198,11 @@ final class ContentChangeJournal
         global $wpdb;
 
         $this->maybeInstallSchema();
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Historical projection repair requires current journal data under the lock.
         $rows = $wpdb->get_results(
             $wpdb->prepare(
-                "SELECT before_projection, after_projection FROM {$this->tableName()} WHERE blog_id = %d AND post_id = %d ORDER BY sequence DESC LIMIT 25",
+                "SELECT before_projection, after_projection FROM %i WHERE blog_id = %d AND post_id = %d ORDER BY sequence DESC LIMIT 25",
+                $this->tableName(),
                 get_current_blog_id(),
                 $postId
             ),
@@ -1386,9 +1469,11 @@ final class ContentChangeJournal
             return array();
         }
         $placeholders = implode(', ', array_fill(0, count($ids), '%d'));
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber -- Resolve current taxonomy IDs directly; the ID list uses generated bound placeholders.
         $termIds = $wpdb->get_col($wpdb->prepare(
-            "SELECT term_id FROM {$wpdb->term_taxonomy} WHERE taxonomy = %s AND term_taxonomy_id IN ({$placeholders})",
-            array_merge(array($taxonomy), $ids)
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Only a count-derived sequence of %d placeholders is interpolated; identifiers and values are bound below.
+            "SELECT term_id FROM %i WHERE taxonomy = %s AND term_taxonomy_id IN ({$placeholders})",
+            array_merge(array($wpdb->term_taxonomy, $taxonomy), $ids)
         ));
         $out = array();
         foreach ($termIds as $termId) {
@@ -1479,8 +1564,10 @@ final class ContentChangeJournal
             return false;
         }
         $this->maybeInstallSchema();
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Read current journal membership directly for network scope validation.
         $journaled = $wpdb->get_var($wpdb->prepare(
-            "SELECT post_type FROM {$this->tableName()} WHERE post_type = %s LIMIT 1",
+            "SELECT post_type FROM %i WHERE post_type = %s LIMIT 1",
+            $this->tableName(),
             $postType
         ));
         if (is_string($journaled) && hash_equals($postType, $journaled)) {
@@ -1504,19 +1591,8 @@ final class ContentChangeJournal
 
     private function headSequence(array $postTypes, bool $includeSubsites = false): int
     {
-        global $wpdb;
         $this->maybeInstallSchema();
-        $placeholders = implode(', ', array_fill(0, count($postTypes), '%s'));
-        $where = "(post_type IN ({$placeholders}) OR operation = 'resource')";
-        $params = $postTypes;
-        if (!$includeSubsites) {
-            $where .= ' AND blog_id = %d';
-            $params[] = get_current_blog_id();
-        }
-        return max(0, (int) $wpdb->get_var($wpdb->prepare(
-            "SELECT MAX(sequence) FROM {$this->tableName()} WHERE {$where}",
-            $params
-        )));
+        return $this->retention()->scopeState($postTypes, $includeSubsites, (int) get_current_blog_id())['headSequence'];
     }
 
     private function hydrateEventRow(array $row): array
@@ -1569,9 +1645,11 @@ final class ContentChangeJournal
         if ($postId < 1 || $sequence < 1) {
             return null;
         }
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Historical projection repair requires current journal data under the lock.
         $rows = $wpdb->get_results(
             $wpdb->prepare(
-                "SELECT before_projection, after_projection FROM {$this->tableName()} WHERE blog_id = %d AND post_id = %d AND sequence < %d ORDER BY sequence DESC LIMIT 50",
+                "SELECT before_projection, after_projection FROM %i WHERE blog_id = %d AND post_id = %d AND sequence < %d ORDER BY sequence DESC LIMIT 50",
+                $this->tableName(),
                 $blogId,
                 $postId,
                 $sequence
@@ -1625,9 +1703,11 @@ final class ContentChangeJournal
     {
         global $wpdb;
         $this->maybeInstallSchema();
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Read the current consumer cursor directly under the journal lock.
         $row = $wpdb->get_row($wpdb->prepare(
             "SELECT consumer_id, root_blog_id, include_subsites, scope_fingerprint, baseline_id, sequence, post_types, acknowledged_gmt
-             FROM {$this->consumersTableName()} WHERE consumer_id = %s",
+             FROM %i WHERE consumer_id = %s",
+            $this->consumersTableName(),
             $consumerId
         ), ARRAY_A);
         if (!is_array($row)) {
@@ -1641,15 +1721,13 @@ final class ContentChangeJournal
     {
         global $wpdb;
         $this->maybeInstallSchema();
-        $where = '';
         if ($consumerId !== '') {
-            $where = $wpdb->prepare(' WHERE consumer_id = %s', $consumerId);
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Durable release cursors must be read fresh under the journal lock.
+            $rows = $wpdb->get_results($wpdb->prepare('SELECT consumer_id, root_blog_id, include_subsites, scope_fingerprint, baseline_id, sequence, post_types, acknowledged_gmt FROM %i WHERE consumer_id = %s ORDER BY consumer_id ASC', $this->consumersTableName(), $consumerId), ARRAY_A);
+        } else {
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Durable release cursors must be read fresh under the journal lock.
+            $rows = $wpdb->get_results($wpdb->prepare('SELECT consumer_id, root_blog_id, include_subsites, scope_fingerprint, baseline_id, sequence, post_types, acknowledged_gmt FROM %i ORDER BY consumer_id ASC', $this->consumersTableName()), ARRAY_A);
         }
-        $rows = $wpdb->get_results(
-            "SELECT consumer_id, root_blog_id, include_subsites, scope_fingerprint, baseline_id, sequence, post_types, acknowledged_gmt
-             FROM {$this->consumersTableName()}{$where} ORDER BY consumer_id ASC",
-            ARRAY_A
-        );
 
         return array_values(array_map(function (array $row): array {
             $consumer = $this->hydrateConsumerRow($row);
@@ -1661,14 +1739,8 @@ final class ContentChangeJournal
 
     private function latestPostEventSequence(int $blogId, string $postType, int $postId): int
     {
-        global $wpdb;
         $this->maybeInstallSchema();
-        return max(0, (int) $wpdb->get_var($wpdb->prepare(
-            "SELECT MAX(sequence) FROM {$this->tableName()} WHERE blog_id = %d AND post_type = %s AND post_id = %d",
-            $blogId,
-            $postType,
-            $postId
-        )));
+        return $this->retention()->latestPostSequence($blogId, $postType, $postId);
     }
 
     /** @return array<int, string> */

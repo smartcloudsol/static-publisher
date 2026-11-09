@@ -2,6 +2,8 @@
 
 namespace SmartCloud\WPSuite\StaticPublisher\Admin;
 
+if (!defined('ABSPATH')) exit;
+
 require_once dirname(__DIR__, basename(__DIR__) === 'php' ? 2 : 1) . '/includes/class-backend-profile.php';
 
 use SmartCloud\WPSuite\Hub\ConfigurationReset;

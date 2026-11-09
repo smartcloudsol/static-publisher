@@ -4,9 +4,8 @@
  * Plugin URI:        https://wpsuite.io/static-publisher/
  * Description:       Static export admin for WP Suite Static Publisher. Generates runtime config, queues export jobs, and shows exporter logs.
  * Requires at least: 6.9
- * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.2.6
+ * Version:           1.2.7
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +32,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.2.6';
+const VERSION = '1.2.7';
 require_once __DIR__ . '/includes/class-backend-profile.php';
 
 final class Plugin
@@ -84,6 +83,7 @@ final class Plugin
 
         add_action('rest_api_init', array($this, 'registerRestRoutes'));
         register_activation_hook(__FILE__, array($this, 'onActivation'));
+        register_deactivation_hook(__FILE__, array(JournalRetention::class, 'unschedule'));
     }
 
     public function onActivation(): void
@@ -1566,7 +1566,9 @@ final class Plugin
         $encoded = wp_json_encode($runtime, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
         if (!is_string($encoded)) throw new \RuntimeException('Publisher runtime configuration invalid.');
         $tmp = $paths['config'] . '.' . bin2hex(random_bytes(8)) . '.tmp';
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod,WordPress.WP.AlternativeFunctions.rename_rename -- The local runner reads this private file; chmod and same-directory rename preserve 0600 and atomic replacement.
         if (file_put_contents($tmp, $encoded, LOCK_EX) !== strlen($encoded) || !chmod($tmp, 0600) || !rename($tmp, $paths['config'])) {
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Remove only the random temporary preimage after a failed atomic write.
             @unlink($tmp); throw new \RuntimeException('Publisher runtime configuration could not be persisted.');
         }
         if ($this->readJsonFile($paths['config']) !== $runtime) throw new \RuntimeException('Publisher runtime configuration verification failed.');
@@ -1687,7 +1689,7 @@ final class Plugin
             }
             return $binding->platformApiBaseUrl;
         }
-        return strtolower((string) parse_url(get_site_url(), PHP_URL_HOST)) === 'dev.wpsuite.io'
+        return strtolower((string) wp_parse_url(get_site_url(), PHP_URL_HOST)) === 'dev.wpsuite.io'
             ? 'https://api-dev.wpsuite.io'
             : 'https://api.wpsuite.io';
     }
