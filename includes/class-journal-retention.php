@@ -10,6 +10,7 @@ if (!defined('ABSPATH')) {
 final class JournalRetention
 {
     private const LEGACY_FLOOR = 'smartcloud_static_publisher_content_journal_retention_floor';
+    private const UNUSED_PROFILES = 'smartcloud_static_publisher_journal_unused_profiles';
     private ?Plugin $plugin;
     private static array $locks = array();
 
@@ -185,6 +186,102 @@ final class JournalRetention
         return $bytes;
     }
 
+    private function unusedProfileBinding(array $paths): array
+    {
+        $profile = BackendProfile::context();
+        if ($profile === null || !is_int($profile['generation'] ?? null) || $profile['generation'] < 1) throw new \RuntimeException('A current versioned backend profile is required.');
+        $runtime = (string) ($paths['runtime'] ?? '');
+        if ($runtime === '' || $runtime[0] !== '/') throw new \RuntimeException('An absolute profile runtime is required.');
+        return array('blogId' => (int) get_current_blog_id(), 'sourceOrigin' => $this->origin(home_url('/')),
+            'profileId' => $profile['id'], 'generation' => $profile['generation'], 'bindingRevision' => $profile['bindingRevision'],
+            'stateNamespace' => $profile['stateNamespace'] ?? null, 'runtime' => rtrim($runtime, '/'),
+            'optionName' => BackendProfile::optionName('smartcloud_static_publisher_config'));
+    }
+
+    /** Absence alone never skips a profile: an explicit, identity-bound declaration is also required. */
+    private function pristineProfileProof(array $paths, array $binding): array
+    {
+        global $wpdb;
+        // Draft/legacy local settings are preserved, never interpreted as an active runtime.
+        // The operator declaration is bound to their exact bytes and every subsequent native change revokes it.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Bind the declaration to the uncached exact option bytes, not a cached or sanitized absence.
+        $raw = $this->checked($wpdb->get_var($wpdb->prepare('SELECT option_value FROM %i WHERE option_name = %s LIMIT 1', $wpdb->options, $binding['optionName'])));
+        $missing = new \stdClass();
+        $cached = get_option($binding['optionName'], $missing);
+        if ($raw === null) {
+            if ($cached !== $missing) throw new \RuntimeException('Publisher configuration has an unverified virtual source.');
+        } else {
+            if (!is_array($cached) || maybe_serialize($cached) !== $raw) throw new \RuntimeException('Publisher configuration cannot be reliably inventoried.');
+        }
+        $observed = array('configurationSha256' => $raw === null ? null : hash('sha256', $raw));
+        foreach (array('config', 'remoteWorkers', 'manifest', 'lock', 'queueMutationLock', 'stopRequest', 'currentProgress', 'schedulerState', 'lastRun', 'queueRunnerHeartbeat', 'deployDiff', 'contentSyncState', 'contentSyncCurrent', 'contentSyncImpactPlan', 'contentSyncCheckpoint', 'contentSyncBaseline', 'contentSyncActiveRules', 'contentSyncCandidateManifest', 'contentSyncInvalidation', 'deployPlan', 'auditEvents') as $key) {
+            $path = (string) ($paths[$key] ?? '');
+            if ($path === '') throw new \RuntimeException('Complete Publisher initialization inventory is required.');
+            if (file_exists($path) || is_link($path)) throw new \RuntimeException('Publisher runtime state already exists; an unused declaration cannot replace discovery.');
+            $observed[$key] = null;
+        }
+        foreach (array('queue' => array(), 'currentRun' => null) as $key => $empty) {
+            $path = (string) ($paths[$key] ?? '');
+            if ($path === '' || is_link($path)) throw new \RuntimeException('Invalid Publisher queue state.');
+            $bytes = $this->fileBytes($path, false);
+            if ($bytes !== null && json_decode($bytes, false, 512, JSON_THROW_ON_ERROR) !== $empty) throw new \RuntimeException('Publisher work exists or cannot be reliably parsed for this profile.');
+            $observed[$key] = $bytes === null ? null : hash('sha256', $bytes);
+        }
+        foreach (array('content-sync-releases.json', 'content-sync-release-cutoffs.json') as $name) {
+            $path = $binding['runtime'] . '/' . $name;
+            if (file_exists($path) || is_link($path)) throw new \RuntimeException('Publisher release history exists for this profile.');
+            $observed[$name] = null;
+        }
+        return array('binding' => $binding, 'observed' => $observed);
+    }
+
+    /** Explicit local operator declaration; never creates a runtime, snapshot or consumer. */
+    public function declareUnusedProfile(string $id, bool $execute = false): array
+    {
+        if ($this->plugin === null || !in_array($id, array('development', 'production'), true)) throw new \InvalidArgumentException('Select a configured backend profile.');
+        $manager = '\\SmartCloud\\WPSuite\\Hub\\BackendProfiles';
+        if (!is_callable(array($manager, 'configuredContexts')) || !is_callable(array($manager, 'runWithContext'))) throw new \RuntimeException('Backend profile management is unavailable.');
+        return $this->withLock(function () use ($manager, $id, $execute): array {
+            $contexts = array_values(array_filter($manager::configuredContexts(), static fn($context) => ($context['id'] ?? null) === $id));
+            if (count($contexts) !== 1) throw new \RuntimeException('Backend profile identity is ambiguous.');
+            return $manager::runWithContext($contexts[0], function () use ($execute): array {
+                $paths = $this->plugin->getRuntimePaths();
+                $binding = $this->unusedProfileBinding($paths);
+                $proof = $this->pristineProfileProof($paths, $binding);
+                $records = get_site_option(self::UNUSED_PROFILES, array());
+                if (!is_array($records)) throw new \RuntimeException('Invalid unused Publisher declarations.');
+                $key = $binding['blogId'] . ':' . $binding['profileId'];
+                if (isset($records[$key]) && ($records[$key]['binding'] ?? null) === $binding && ($records[$key]['revoked'] ?? false)) throw new \RuntimeException('This profile was initialized; a fresh verified discovery snapshot is required.');
+                $record = array('schemaVersion' => 1, 'binding' => $binding, 'configurationSha256' => $proof['observed']['configurationSha256'], 'declaredAt' => gmdate('c'), 'revoked' => false);
+                if ($execute) {
+                    $records[$key] = $record;
+                    update_site_option(self::UNUSED_PROFILES, $records);
+                    if (get_site_option(self::UNUSED_PROFILES) !== $records) throw new \RuntimeException('Unused Publisher declaration readback failed.');
+                }
+                return array('dryRun' => !$execute, 'status' => 'unused-before-initialization', 'binding' => $binding, 'verifiedPristine' => true, 'proof' => $proof, 'eventsDeleted' => 0);
+            });
+        });
+    }
+
+    /** Native configuration creation/change/deletion permanently revokes the old declaration. */
+    public function revokeUnusedProfileForOption($option): void
+    {
+        if (!is_string($option) || !str_ends_with($option, 'smartcloud_static_publisher_config')) return;
+        $this->withLock(function () use ($option): void {
+            $records = get_site_option(self::UNUSED_PROFILES, array());
+            if (!is_array($records)) throw new \RuntimeException('Invalid unused Publisher declarations.');
+            $changed = false;
+            foreach ($records as &$record) {
+                if (($record['binding']['blogId'] ?? null) === (int) get_current_blog_id() && ($record['binding']['optionName'] ?? null) === $option && empty($record['revoked'])) {
+                    $record['revoked'] = true;
+                    $changed = true;
+                }
+            }
+            unset($record);
+            if ($changed) update_site_option(self::UNUSED_PROFILES, $records);
+        });
+    }
+
     /** Inventory is repeated immediately before commit, under the journal mutex. */
     private function inventory(): array
     {
@@ -205,6 +302,7 @@ final class JournalRetention
         sort($blogIds, SORT_NUMERIC);
         $proof = array();
         $protect = array();
+        $unused = array();
         foreach ($blogIds as $blogId) {
             $switched = is_multisite() && $blogId !== (int) get_current_blog_id();
             if ($switched && !switch_to_blog($blogId)) throw new \RuntimeException('Cannot switch to site.');
@@ -219,11 +317,25 @@ final class JournalRetention
                     throw new \RuntimeException('Backend profile inventory unavailable.');
                 }
                 foreach ($contexts as $context) {
-                    $read = function () use ($blogId, &$proof, &$protect, $wpdb) {
+                    $read = function () use ($blogId, &$proof, &$protect, &$unused, $wpdb) {
                         $paths = $this->plugin->getRuntimePaths();
                         $runtime = (string) ($paths['runtime'] ?? '');
                         if ($runtime === '' || $runtime[0] !== '/') throw new \RuntimeException('Runtime directory must be absolute.');
                         $runtime = rtrim($runtime, '/');
+                        if (BackendProfile::context() !== null) {
+                            $binding = $this->unusedProfileBinding($paths);
+                            $records = get_site_option(self::UNUSED_PROFILES, array());
+                            if (!is_array($records)) throw new \RuntimeException('Invalid unused Publisher declarations.');
+                            $record = $records[$blogId . ':' . $binding['profileId']] ?? null;
+                            $declaredAt = is_array($record) && is_string($record['declaredAt'] ?? null) ? strtotime($record['declaredAt']) : false;
+                            if (is_array($record) && ($record['schemaVersion'] ?? null) === 1 && ($record['revoked'] ?? null) === false && ($record['binding'] ?? null) === $binding && $declaredAt !== false && $declaredAt <= time() + 60) {
+                                $pristine = $this->pristineProfileProof($paths, $binding);
+                                if (!array_key_exists('configurationSha256', $record) || $record['configurationSha256'] !== $pristine['observed']['configurationSha256']) throw new \RuntimeException('Unused Publisher configuration changed; verified discovery is required.');
+                                $proof[] = array('unusedDeclaration' => $record, 'pristine' => $pristine);
+                                $unused[] = array('blogId' => $blogId, 'profileId' => $binding['profileId'], 'generation' => $binding['generation'], 'bindingRevision' => $binding['bindingRevision'], 'declaredAt' => $record['declaredAt'], 'status' => 'declared-unused-before-initialization');
+                                return;
+                            }
+                        }
                         $snapshotBytes = $this->fileBytes((string) ($paths['contentSyncActiveRules'] ?? ''));
                         $configBytes = $this->fileBytes((string) ($paths['config'] ?? ''));
                         $baselineBytes = $this->fileBytes((string) ($paths['contentSyncBaseline'] ?? ''), false);
@@ -303,7 +415,7 @@ final class JournalRetention
                 if ($switched) restore_current_blog();
             }
         }
-        return array('proof' => $proof, 'consumers' => $protect);
+        return array('proof' => $proof, 'consumers' => $protect, 'unusedProfiles' => $unused);
     }
 
     private function assertInnoDB(): void
@@ -362,7 +474,7 @@ final class JournalRetention
             $water = $this->checked($wpdb->get_row("SELECT high_water,retention_floor FROM {$this->table('journal_state')} WHERE id=1", ARRAY_A));
             // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table identifiers are validated and dynamic values prepared; uncached journal state is required for consistency.
             $liveHead = (int) $this->checked($wpdb->get_var("SELECT MAX(sequence) FROM {$events}"));
-            $report = array('dryRun' => $dryRun, 'days' => $days, 'batchSize' => $batch, 'cutoff' => $cutoff, 'cutoffSequence' => $rows ? max(array_map(static fn($row) => (int) $row['sequence'], $rows)) : 0, 'expired' => $expired, 'skipped' => $skipped, 'eligible' => $expired - $skipped, 'selected' => count($rows), 'deleted' => 0, 'retained' => $total, 'remaining' => $expired - $skipped, 'activeConsumers' => $inventory['consumers'], 'highWaterSequence' => max($liveHead, (int) ($water['high_water'] ?? 0)), 'retentionFloor' => max((int) ($water['retention_floor'] ?? 0), (int) get_site_option(self::LEGACY_FLOOR, 0)), 'errors' => array());
+            $report = array('dryRun' => $dryRun, 'days' => $days, 'batchSize' => $batch, 'cutoff' => $cutoff, 'cutoffSequence' => $rows ? max(array_map(static fn($row) => (int) $row['sequence'], $rows)) : 0, 'expired' => $expired, 'skipped' => $skipped, 'eligible' => $expired - $skipped, 'selected' => count($rows), 'deleted' => 0, 'retained' => $total, 'remaining' => $expired - $skipped, 'activeConsumers' => $inventory['consumers'], 'unusedProfiles' => $inventory['unusedProfiles'], 'highWaterSequence' => max($liveHead, (int) ($water['high_water'] ?? 0)), 'retentionFloor' => max((int) ($water['retention_floor'] ?? 0), (int) get_site_option(self::LEGACY_FLOOR, 0)), 'errors' => array());
             if ($dryRun || !$rows) return $report;
             $handle = $wpdb->dbh;
             if (!($handle instanceof \mysqli)) throw new \RuntimeException('Transactional mysqli connection unavailable.');
@@ -446,12 +558,25 @@ final class JournalRetention
     public function registerHooks(): void
     {
         if ($this->plugin === null) throw new \RuntimeException('Publisher plugin is unavailable.');
+        foreach (array('added_option', 'updated_option', 'deleted_option') as $hook) add_action($hook, array($this, 'revokeUnusedProfileForOption'), 10, 1);
         add_action('init', static function () {
             if (!wp_next_scheduled('smartcloud_static_publisher_journal_retention_daily')) wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', 'smartcloud_static_publisher_journal_retention_daily');
         });
         add_action('smartcloud_static_publisher_journal_retention_daily', array($this, 'runScheduled'));
         add_action('smartcloud_static_publisher_journal_retention_continue', array($this, 'runScheduled'));
         if (defined('WP_CLI') && WP_CLI && class_exists('WP_CLI')) {
+            \WP_CLI::add_command('static-publisher journal-profile-unused', function ($args, $flags) {
+                try {
+                    if (isset($flags['dry-run'], $flags['execute'])) throw new \InvalidArgumentException('--dry-run and --execute are mutually exclusive.');
+                    foreach (array('dry-run', 'execute') as $flag) {
+                        if (array_key_exists($flag, $flags) && $flags[$flag] !== true) throw new \InvalidArgumentException('--' . $flag . ' must be a valueless flag.');
+                    }
+                    $report = $this->declareUnusedProfile((string) ($flags['profile'] ?? ''), isset($flags['execute']));
+                    \WP_CLI::line(wp_json_encode($report));
+                } catch (\Throwable $error) {
+                    \WP_CLI::error(wp_json_encode(array('errors' => array($error->getMessage()))));
+                }
+            });
             \WP_CLI::add_command('static-publisher journal-prune', function ($args, $flags) {
                 try {
                     if (isset($flags['dry-run'], $flags['execute'])) throw new \InvalidArgumentException('--dry-run and --execute are mutually exclusive.');

@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.2.7
+Stable tag: 1.2.8
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -349,6 +349,8 @@ The default retention is 30 days. A daily WordPress task deletes expired events 
 
 For reliable server-side execution, run `wp static-publisher journal-prune --dry-run --days=30 --batch-size=500`, then use `--execute` to delete one eligible batch. Repeat while the report lists remaining eligible events. Retention days and batch size can also be configured with the `smartcloud_static_publisher_journal_retention_days` and `smartcloud_static_publisher_journal_retention_batch_size` site options or filters. Existing exporter `prune-logs` is separate and unchanged.
 
+A connected backend profile whose Publisher runtime has not been initialized can be explicitly declared unused with `wp static-publisher journal-profile-unused --profile=development --dry-run`, followed by `--execute`. This requires the absence of runtime configuration, publishing history and queued work. Existing local draft settings are preserved and bound by their exact hash. The declaration applies only to that blog and backend binding/generation. Native settings changes or first runtime initialization revoke it; a future consumer still requires a verified full-publish baseline. Missing discovery data without this explicit declaration continues to block cleanup.
+
 If a consumer's cursor is older than retained history, complete a new verified full publish to establish its baseline. Journal sequence and per-post release tracking survive cleanup. Physical disk compaction is never automatic: after successful cleanup, use `wp static-publisher journal-rebuild --execute --backup=/private/existing-directory/journal.jsonl` during a maintenance window. The existing backup directory must be private (0700), outside WordPress and uploads. The command creates a complete private backup before its one-time InnoDB rebuild and preserves the next journal sequence.
 
 == Screenshots ==
@@ -521,6 +523,11 @@ SmartCloud Static Publisher is shipped to WordPress.org as a pre-built distribut
 Build steps and development notes are documented in the repository README.
 
 == Changelog ==
+
+= 1.2.8 =
+* Add an explicit, identity-bound declaration for Publisher runtimes that have not been initialized.
+* Revoke unused declarations on settings changes or first initialization, preserving future baseline requirements.
+* Preserve active publishing configuration and content-sync fingerprints.
 
 = 1.2.7 =
 * Add configurable 30-day content journal retention with bounded daily cleanup and WP-CLI support.
@@ -720,6 +727,9 @@ Build steps and development notes are documented in the repository README.
 Full operator guidance for older releases is preserved in the public [historical upgrade archive](https://github.com/smartcloudsol/static-publisher/blob/main/CHANGELOG-HISTORY.md).
 
 == Upgrade Notice ==
+
+= 1.2.8 =
+Use Exporter 1.2.17 or newer. Declare a Publisher runtime unused only before initialization, after confirming it is not used. Initialized profiles need fresh discovery snapshots; new content-sync consumers need a verified full-publish baseline.
 
 = 1.2.7 =
 Update Exporter to 1.2.17 and WP Suite plugins together. Cleanup requires fresh, verified snapshots for every backend profile. Consumers older than retained history need a new verified full-publish baseline. Table rebuilding is a separate, backup-first operation.
