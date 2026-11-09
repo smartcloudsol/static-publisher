@@ -66,6 +66,7 @@ class Admin
             'surface_save' => array($this, 'savePublishingSurface'),
             'surface_action' => array($this, 'publishingSurfaceAction'),
             'advanced_links' => array(
+                array('label' => __('Content journal cleanup', 'smartcloud-static-publisher'), 'url' => admin_url('admin.php?page=' . self::MENU_SLUG . '&section=maintenance'), 'required_capability' => 'manage_options'),
                 array('label' => __('Publishing jobs and logs', 'smartcloud-static-publisher'), 'url' => admin_url('admin.php?page=' . self::MENU_SLUG . '&section=jobs'), 'required_capability' => 'manage_options'),
                 array('label' => __('Publisher configuration', 'smartcloud-static-publisher'), 'url' => admin_url('admin.php?page=' . self::MENU_SLUG . '&section=configuration'), 'required_capability' => 'manage_options'),
                 array('label' => __('Publishing audit', 'smartcloud-static-publisher'), 'url' => admin_url('admin.php?page=' . self::MENU_SLUG . '&section=audit'), 'required_capability' => 'manage_options'),
@@ -222,6 +223,9 @@ var WpSuite = (typeof globalThis !== "undefined" ? globalThis : window).WpSuite;
 
     public function registerRestRoutes(): void
     {
+        require_once dirname(__DIR__, basename(__DIR__) === 'php' ? 2 : 1) . '/includes/class-journal-admin.php';
+        (new \SmartCloud\WPSuite\StaticPublisher\JournalAdmin($this->plugin))->registerRoutes();
+
         register_rest_route(self::REST_NAMESPACE, '/state', array(
             'methods' => 'GET',
             'permission_callback' => array($this, 'canManageRead'),

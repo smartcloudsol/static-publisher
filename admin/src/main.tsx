@@ -62,6 +62,7 @@ import DocSidebar from "./DocSidebar";
 import PublishDialog, { type PublishRequest } from "./PublishDialog";
 import TargetedAssetOptions from "./TargetedAssetOptions";
 import UrlJobInput from "./UrlJobInput";
+import JournalRetentionPanel from "./JournalRetentionPanel";
 import { parseUrlJobLines, urlJobFields } from "./url-job-input";
 import { requestedPublisherAdminPage, resolvePublisherAdminPage, type PublisherAdminPage } from "./admin-page";
 import { useAdminSectionHistory } from "./admin-section-history";
@@ -3338,6 +3339,11 @@ export default function Main({ store }: MainProps) {
       value: "audit",
       label: __("Audit Logs", TEXT_DOMAIN),
       icon: <IconFileText size={16} />,
+    },
+    {
+      value: "maintenance",
+      label: __("Maintenance", TEXT_DOMAIN),
+      icon: <IconTrash size={16} />,
     },
   ];
   const navPro: Array<{
@@ -6905,6 +6911,7 @@ export default function Main({ store }: MainProps) {
                   </Card>
                 )}
 
+                {mainSection === "maintenance" && <JournalRetentionPanel request={(path, init) => restRequest(boot, path, init)} />}
                 {mainSection === "audit" && (
                   <Card withBorder shadow="sm" radius="md" padding="lg">
                     <>

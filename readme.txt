@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.2.8
+Stable tag: 1.2.7
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -347,6 +347,8 @@ This should only be used for trusted internal environments. Keep it disabled for
 
 The default retention is 30 days. A daily WordPress task deletes expired events in batches of up to 500, with bounded follow-up tasks when needed. Active content-sync consumers retain events they have not acknowledged. Cleanup stops if any configured backend profile lacks fresh, verified discovery data. Historical consumer records without an active rule do not block cleanup. Install Exporter 1.2.17 or newer for the required snapshot support.
 
+Open **Maintenance → Content journal cleanup** to review the configured retention period, expired and protected entries, and the next batch before confirming removal. Each confirmation removes at most the configured batch size (500 by default); review another batch if eligible entries remain. Deletion is permanent, and consumers older than retained history need a new verified full-publish baseline. On multisite, this shared-journal operation requires a network administrator. Manual cleanup does not require a WP Suite account or subscription. WordPress schedules daily cleanup automatically; use manual cleanup or a reliable server schedule when WordPress task execution is disabled or traffic is low.
+
 For reliable server-side execution, run `wp static-publisher journal-prune --dry-run --days=30 --batch-size=500`, then use `--execute` to delete one eligible batch. Repeat while the report lists remaining eligible events. Retention days and batch size can also be configured with the `smartcloud_static_publisher_journal_retention_days` and `smartcloud_static_publisher_journal_retention_batch_size` site options or filters. Existing exporter `prune-logs` is separate and unchanged.
 
 A connected backend profile whose Publisher runtime has not been initialized can be explicitly declared unused with `wp static-publisher journal-profile-unused --profile=development --dry-run`, followed by `--execute`. This requires the absence of runtime configuration, publishing history and queued work. Existing local draft settings are preserved and bound by their exact hash. The declaration applies only to that blog and backend binding/generation. Native settings changes or first runtime initialization revoke it; a future consumer still requires a verified full-publish baseline. Missing discovery data without this explicit declaration continues to block cleanup.
@@ -524,16 +526,13 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
-= 1.2.8 =
-* Add an explicit, identity-bound declaration for Publisher runtimes that have not been initialized.
-* Revoke unused declarations on settings changes or first initialization, preserving future baseline requirements.
-* Preserve active publishing configuration and content-sync fingerprints.
-
 = 1.2.7 =
 * Add configurable 30-day content journal retention with bounded daily cleanup and WP-CLI support.
-* Preserve active content-sync consumers, journal sequence continuity and per-post release tracking during cleanup.
-* Add explicit backup-first journal table maintenance and require a new full-publish baseline when retained history is unavailable.
-* Improve WordPress compatibility and shared administration asset dependencies.
+* Add manual journal cleanup under Maintenance, with a fresh preview and explicit confirmation before each bounded batch.
+* Preserve active content-sync consumers, durable journal sequences and per-post release tracking during cleanup.
+* Handle explicitly unused Publisher backend runtimes and revoke unused declarations on first initialization.
+* Require a verified full-publish baseline when retained history is unavailable, and provide separate backup-first table maintenance.
+* Improve WordPress compatibility and shared administration asset dependencies while preserving active publishing configuration.
 
 = 1.2.6 =
 * Export the current robots.txt even when pages and sitemaps do not link to it.
@@ -728,11 +727,8 @@ Full operator guidance for older releases is preserved in the public [historical
 
 == Upgrade Notice ==
 
-= 1.2.8 =
-Use Exporter 1.2.17 or newer. Declare a Publisher runtime unused only before initialization, after confirming it is not used. Initialized profiles need fresh discovery snapshots; new content-sync consumers need a verified full-publish baseline.
-
 = 1.2.7 =
-Update Exporter to 1.2.17 and WP Suite plugins together. Cleanup requires fresh, verified snapshots for every backend profile. Consumers older than retained history need a new verified full-publish baseline. Table rebuilding is a separate, backup-first operation.
+Use Exporter 1.2.17. Review journal cleanup under Maintenance. Initialized profiles need verified discovery; unused profiles need explicit declarations. Old cursors require a full-publish baseline. If GitHub 1.2.8 is installed, reinstall this package manually.
 
 = 1.2.5 =
 When using multiple WP Suite plugins, update them together and reload open administration pages. The standalone exporter runner is updated separately.

@@ -7,7 +7,7 @@ const { outputText } = ts.transpileModule(source, { compilerOptions: { module: t
 const { resolvePublisherAdminPage, requestedPublisherAdminPage } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 
 test("Publisher explicit sections take priority over either hydrated configuration state", () => {
-  for (const section of ["jobs", "configuration", "audit", "scheduler", "extraTargets"]) {
+  for (const section of ["jobs", "configuration", "audit", "maintenance", "scheduler", "extraTargets"]) {
     assert.equal(resolvePublisherAdminPage(`?page=publisher&section=${section}`, false), section);
     assert.equal(resolvePublisherAdminPage(`?page=publisher&section=${section}`, true), section);
   }

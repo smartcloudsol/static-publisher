@@ -5,7 +5,7 @@
  * Description:       Static export admin for WP Suite Static Publisher. Generates runtime config, queues export jobs, and shows exporter logs.
  * Requires at least: 6.9
  * Requires PHP:      8.1
- * Version:           1.2.8
+ * Version:           1.2.7
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -32,7 +32,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.2.8';
+const VERSION = '1.2.7';
 require_once __DIR__ . '/includes/class-backend-profile.php';
 
 final class Plugin

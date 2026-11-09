@@ -1,4 +1,4 @@
-export const PUBLISHER_ADMIN_PAGES = ["jobs", "configuration", "audit", "scheduler", "extraTargets"] as const;
+export const PUBLISHER_ADMIN_PAGES = ["jobs", "configuration", "audit", "maintenance", "scheduler", "extraTargets"] as const;
 export type PublisherAdminPage = typeof PUBLISHER_ADMIN_PAGES[number];
 
 export function requestedPublisherAdminPage(search: string): PublisherAdminPage | undefined {

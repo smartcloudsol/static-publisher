@@ -301,6 +301,7 @@ final class JournalRetention
         }
         sort($blogIds, SORT_NUMERIC);
         $proof = array();
+        $stableProof = array();
         $protect = array();
         $unused = array();
         foreach ($blogIds as $blogId) {
@@ -317,7 +318,7 @@ final class JournalRetention
                     throw new \RuntimeException('Backend profile inventory unavailable.');
                 }
                 foreach ($contexts as $context) {
-                    $read = function () use ($blogId, &$proof, &$protect, &$unused, $wpdb) {
+                    $read = function () use ($blogId, &$proof, &$stableProof, &$protect, &$unused, $wpdb) {
                         $paths = $this->plugin->getRuntimePaths();
                         $runtime = (string) ($paths['runtime'] ?? '');
                         if ($runtime === '' || $runtime[0] !== '/') throw new \RuntimeException('Runtime directory must be absolute.');
@@ -332,6 +333,7 @@ final class JournalRetention
                                 $pristine = $this->pristineProfileProof($paths, $binding);
                                 if (!array_key_exists('configurationSha256', $record) || $record['configurationSha256'] !== $pristine['observed']['configurationSha256']) throw new \RuntimeException('Unused Publisher configuration changed; verified discovery is required.');
                                 $proof[] = array('unusedDeclaration' => $record, 'pristine' => $pristine);
+                                $stableProof[] = array('unusedDeclaration' => $record, 'pristine' => $pristine);
                                 $unused[] = array('blogId' => $blogId, 'profileId' => $binding['profileId'], 'generation' => $binding['generation'], 'bindingRevision' => $binding['bindingRevision'], 'declaredAt' => $record['declaredAt'], 'status' => 'declared-unused-before-initialization');
                                 return;
                             }
@@ -367,6 +369,9 @@ final class JournalRetention
                         }
                         if ($configProfile !== $expectedProfile) throw new \RuntimeException('Runtime config profile identity mismatch.');
                         $proof[] = array($blogId, $runtime, hash('sha256', $snapshotBytes), hash('sha256', $configBytes), $baselineBytes === null ? null : hash('sha256', $baselineBytes), $expectedProfile);
+                        $stableSnapshot = $snapshot;
+                        unset($stableSnapshot['evaluatedAt']);
+                        $stableProof[] = array($blogId, $runtime, $stableSnapshot, hash('sha256', $configBytes), $baselineBytes === null ? null : hash('sha256', $baselineBytes), $expectedProfile);
                         $entries = $snapshot['entries'];
                         $seenRules = array(); $seenConsumers = array();
                         foreach ($snapshot['rules'] as $rule) {
@@ -415,7 +420,7 @@ final class JournalRetention
                 if ($switched) restore_current_blog();
             }
         }
-        return array('proof' => $proof, 'consumers' => $protect, 'unusedProfiles' => $unused);
+        return array('proof' => $proof, 'consumers' => $protect, 'unusedProfiles' => $unused, 'fingerprint' => hash('sha256', wp_json_encode($stableProof, JSON_THROW_ON_ERROR)));
     }
 
     private function assertInnoDB(): void
@@ -450,11 +455,19 @@ final class JournalRetention
         return $args ? $wpdb->prepare($query, $args) : $query;
     }
 
-    public function prune(int $days = 30, int $batch = 500, bool $dryRun = true): array
+    /** Bind a confirmation to the selected batch and safety state, ignoring the clock tick only. */
+    public static function previewFingerprint(array $report): string
+    {
+        unset($report['cutoff'], $report['reportedAt']);
+        $report['dryRun'] = true;
+        return hash('sha256', wp_json_encode($report, JSON_THROW_ON_ERROR));
+    }
+
+    public function prune(int $days = 30, int $batch = 500, bool $dryRun = true, ?string $expectedPreviewFingerprint = null): array
     {
         if ($days < 1 || $days > 36500 || $batch < 1 || $batch > 5000) throw new \InvalidArgumentException('Days must be 1–36500 and batch size 1–5000.');
         if ($this->plugin === null) throw new \RuntimeException('Publisher plugin is unavailable.');
-        $report = $this->withLock(function () use ($days, $batch, $dryRun) {
+        $report = $this->withLock(function () use ($days, $batch, $dryRun, $expectedPreviewFingerprint) {
             global $wpdb;
             $this->assertInnoDB();
             $inventory = $this->inventory();
@@ -475,6 +488,9 @@ final class JournalRetention
             // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table identifiers are validated and dynamic values prepared; uncached journal state is required for consistency.
             $liveHead = (int) $this->checked($wpdb->get_var("SELECT MAX(sequence) FROM {$events}"));
             $report = array('dryRun' => $dryRun, 'days' => $days, 'batchSize' => $batch, 'cutoff' => $cutoff, 'cutoffSequence' => $rows ? max(array_map(static fn($row) => (int) $row['sequence'], $rows)) : 0, 'expired' => $expired, 'skipped' => $skipped, 'eligible' => $expired - $skipped, 'selected' => count($rows), 'deleted' => 0, 'retained' => $total, 'remaining' => $expired - $skipped, 'activeConsumers' => $inventory['consumers'], 'unusedProfiles' => $inventory['unusedProfiles'], 'highWaterSequence' => max($liveHead, (int) ($water['high_water'] ?? 0)), 'retentionFloor' => max((int) ($water['retention_floor'] ?? 0), (int) get_site_option(self::LEGACY_FLOOR, 0)), 'errors' => array());
+            $report['selectionFingerprint'] = hash('sha256', wp_json_encode($rows, JSON_THROW_ON_ERROR));
+            $report['safetyFingerprint'] = $inventory['fingerprint'];
+            if ($expectedPreviewFingerprint !== null && !hash_equals($expectedPreviewFingerprint, self::previewFingerprint($report))) throw new \UnexpectedValueException('Journal changed. Review cleanup again.');
             if ($dryRun || !$rows) return $report;
             $handle = $wpdb->dbh;
             if (!($handle instanceof \mysqli)) throw new \RuntimeException('Transactional mysqli connection unavailable.');
