@@ -6,7 +6,7 @@
  * Requires at least: 6.9
  * Tested up to:      7.1
  * Requires PHP:      8.1
- * Version:           1.2.5
+ * Version:           1.2.6
  * Author:            Smart Cloud Solutions Inc.
  * Author URI:        https://smart-cloud-solutions.com
  * License:           MIT
@@ -33,7 +33,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
     );
 }
 
-const VERSION = '1.2.5';
+const VERSION = '1.2.6';
 require_once __DIR__ . '/includes/class-backend-profile.php';
 
 final class Plugin
@@ -444,6 +444,11 @@ final class Plugin
             ? $processingConcurrency
             : min(100, max(1, absint($deployWorker['concurrency'] ?? 8)));
 
+        // robots.txt is not normally linked from pages or listed in sitemaps.
+        // Always capture the origin's current policy during a full crawl.
+        $seedPaths = $this->sanitizePathList($input['seedPaths'] ?? array());
+        if (!in_array('/robots.txt', $seedPaths, true)) $seedPaths[] = '/robots.txt';
+
         $config = array(
             'sourceOrigin' => $siteAddressOrigin,
             'targetOrigin' => $this->sanitizeOriginOrDot($input['targetOrigin'] ?? ''),
@@ -453,7 +458,7 @@ final class Plugin
             'exporterDir' => $this->sanitizeOptionalHostPath($input['exporterDir'] ?? ''),
             'outputDir' => $this->normalizeStorageRelativePath((string) ($input['outputDir'] ?? 'export'), 'export'),
             'noJavaScriptRenderPathPrefixes' => $this->sanitizePathList($input['noJavaScriptRenderPathPrefixes'] ?? array()),
-            'seedPaths' => $this->sanitizePathList($input['seedPaths'] ?? array()),
+            'seedPaths' => $seedPaths,
             'generated404RequestPath' => $this->sanitizeOptionalPublicPath($input['generated404RequestPath'] ?? ''),
             'sitemapPaths' => $this->sanitizePathList($input['sitemapPaths'] ?? array('/sitemap_index.xml', '/wp-sitemap.xml', '/sitemap.xml')),
             'allowedAssetHosts' => $this->sanitizeHostList($input['allowedAssetHosts'] ?? array()),
