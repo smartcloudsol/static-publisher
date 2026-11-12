@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.2.7
+Stable tag: 1.2.8
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -526,6 +526,9 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.2.8 =
+* Update shared WP Suite Hub authentication compatibility and improve Hub ownership when WP Suite plugins are installed together.
+
 = 1.2.7 =
 * Add configurable 30-day content journal retention with bounded daily cleanup and WP-CLI support.
 * Add manual journal cleanup under Maintenance, with a fresh preview and explicit confirmation before each bounded batch.
@@ -726,6 +729,9 @@ Build steps and development notes are documented in the repository README.
 Full operator guidance for older releases is preserved in the public [historical upgrade archive](https://github.com/smartcloudsol/static-publisher/blob/main/CHANGELOG-HISTORY.md).
 
 == Upgrade Notice ==
+
+= 1.2.8 =
+Update WP Suite plugins together and reload open administration pages to use the updated shared authentication bundle.
 
 = 1.2.7 =
 Use Exporter 1.2.17. Review journal cleanup under Maintenance. Initialized profiles need verified discovery; unused profiles need explicit declarations. Old cursors require a full-publish baseline. If GitHub 1.2.8 is installed, reinstall this package manually.
