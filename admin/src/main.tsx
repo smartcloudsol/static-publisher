@@ -4027,6 +4027,14 @@ export default function Main({ store }: MainProps) {
                         </Title>
                       </Group>
                       <Stack>
+                        <Alert color="blue" title={__("When is a Full publish needed?", TEXT_DOMAIN)}>
+                          <Stack gap="xs">
+                            <Text size="sm">{__("No Full publish: logging, concurrency and worker batch/retry controls do not change the published content.", TEXT_DOMAIN)}</Text>
+                            <Text size="sm">{__("Incremental: adding the first generated 404 page or appending seed and sitemap paths can reuse the existing export when compatibility is verified. Use an unlimited crawl without resume.", TEXT_DOMAIN)}</Text>
+                            <Text size="sm">{__("Full publish: changes to rendering, URL rewriting, filters or the output target, and removing or reordering discovery paths require a new complete export. Replacing or disabling an existing generated 404 path also requires Full publish.", TEXT_DOMAIN)}</Text>
+                            <Text size="sm">{__("If an older export cannot prove compatibility, one Full publish may be needed. The exporter reports the changed settings when that information is available.", TEXT_DOMAIN)}</Text>
+                          </Stack>
+                        </Alert>
                         <TextInput
                           label={infoLabel(
                             __("Source origin", TEXT_DOMAIN),
@@ -4921,7 +4929,7 @@ export default function Main({ store }: MainProps) {
                                 "seed-paths",
                               )}
                               description={__(
-                                "Initial paths to queue directly before/alongside sitemap discovery.",
+                                "Initial paths to queue directly before/alongside sitemap discovery. Appending paths can use Incremental publish; removing or reordering paths requires Full publish.",
                                 TEXT_DOMAIN,
                               )}
                               value={seedPathsText}
@@ -4937,7 +4945,7 @@ export default function Main({ store }: MainProps) {
                                 "generated-404-request-path",
                               )}
                               description={__(
-                                "Optional source path that should render a real HTTP 404, then be captured into the matching static output path. Leave empty to disable.",
+                                "Optional source path that must return HTTP 404 and is rendered into the matching static output path. Adding the first path can use Incremental publish. Replacing or disabling an existing path requires Full publish.",
                                 TEXT_DOMAIN,
                               )}
                               placeholder="/not-found/preview/"
@@ -4954,7 +4962,7 @@ export default function Main({ store }: MainProps) {
                                 "sitemap-paths",
                               )}
                               description={__(
-                                "Sitemap endpoints used for recursive URL discovery.",
+                                "Sitemap endpoints used for recursive URL discovery. Appending endpoints can use Incremental publish; removing or reordering endpoints requires Full publish.",
                                 TEXT_DOMAIN,
                               )}
                               value={sitemapPathsText}
