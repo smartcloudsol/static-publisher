@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.2.10
+Stable tag: 1.2.11
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -526,6 +526,9 @@ Build steps and development notes are documented in the repository README.
 
 == Changelog ==
 
+= 1.2.11 =
+* Updates the shared WP Suite Hub for more reliable passkey MFA status and preserves existing authenticator preferences. Republish your static site to apply the updated sign-in experience.
+
 = 1.2.10 =
 * Explain which configuration changes can use incremental publishing and which require a Full publish.
 * Use Exporter 1.2.19 to add a generated 404 capture or append seed and sitemap paths without rebuilding unchanged output, when compatibility is verified.
@@ -737,6 +740,9 @@ Build steps and development notes are documented in the repository README.
 Full operator guidance for older releases is preserved in the public [historical upgrade archive](https://github.com/smartcloudsol/static-publisher/blob/main/CHANGELOG-HISTORY.md).
 
 == Upgrade Notice ==
+
+= 1.2.11 =
+Updates the shared WP Suite Hub for more reliable passkey MFA status and preserves existing authenticator preferences. Republish your static site to apply the updated sign-in experience.
 
 = 1.2.10 =
 Update the separately installed Exporter to 1.2.19 to use incremental configuration changes. Keep any active publish running; update the coordinator only while all shared publishing runners are idle.
