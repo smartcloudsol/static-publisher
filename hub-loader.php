@@ -6,7 +6,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-const SMARTCLOUD_WPSUITE_STATIC_PUBLISHER_HUB_VERSION = '2.7.11';
+const SMARTCLOUD_WPSUITE_STATIC_PUBLISHER_HUB_VERSION = '2.7.12';
 
 final class StaticPublisherHubLoader
 {
