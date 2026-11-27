@@ -4,7 +4,7 @@ Tags: static site, playwright, s3, cloudfront, export
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.2.15
+Stable tag: 1.2.16
 License: MIT
 License URI: https://mit-license.org/
 Text Domain: smartcloud-static-publisher
@@ -525,6 +525,10 @@ SmartCloud Static Publisher is shipped to WordPress.org as a pre-built distribut
 Build steps and development notes are documented in the repository README.
 
 == Changelog ==
+
+= 1.2.16 =
+* Review and adopt a publishing destination recommended by a linked cloud deployment.
+* Highlight pending deployment recommendations in the WP Suite overview and Tools menu.
 
 = 1.2.15 =
 * Update the shared WP Suite Hub with WordPress asset enqueueing and translatable validation messages.

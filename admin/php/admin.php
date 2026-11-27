@@ -38,6 +38,7 @@ class Admin
     public function registerHooks(): void
     {
         add_filter('smartcloud_wpsuite_admin_capabilities', array($this, 'registerHubCapabilities'));
+        add_filter('smartcloud_wpsuite_deployment_candidate_adapters', array($this, 'registerDeploymentCandidate'));
         add_action('admin_menu', array($this, 'addMenu'), 30);
         add_action('admin_enqueue_scripts', array($this, 'enqueueAssets'));
         add_action('rest_api_init', array($this, 'registerRestRoutes'));
@@ -438,6 +439,105 @@ var WpSuite = (typeof globalThis !== "undefined" ? globalThis : window).WpSuite;
         return new WP_REST_Response(array('config' => $this->plugin->getResolvedConfig()), 200);
     }
 
+    public function registerDeploymentCandidate(array $adapters): array
+    {
+        $adapters['publisher'] = array(
+            'sections' => array($this, 'deploymentCandidateSections'),
+            'apply' => array($this, 'applyDeploymentCandidate'),
+        );
+        return $adapters;
+    }
+
+    public function deploymentCandidateSections(array $fields): array
+    {
+        if (!$this->canManageRead()) return array();
+        $target = self::deploymentCandidateTarget($fields);
+        if ($target === null) return array();
+        $rows = $this->deploymentCandidateRows($this->plugin->getConfig(), $target);
+        if (!$rows) return array();
+        return array(
+            'target' => array(
+                'title' => __('Static Publisher publishing destination', 'smartcloud-static-publisher'),
+                'defaultSelected' => false,
+                'rows' => $rows,
+            ),
+        );
+    }
+
+    public function applyDeploymentCandidate(string $section, array $fields, ?array $reviewedRows = null): bool|\WP_Error
+    {
+        if (!$this->canManageWrite()) {
+            return new \WP_Error('publisher_candidate_forbidden', __('You cannot change the publishing destination.', 'smartcloud-static-publisher'), array('status' => 403));
+        }
+        $target = self::deploymentCandidateTarget($fields);
+        if ($section !== 'target' || $target === null) {
+            return new \WP_Error('publisher_candidate_invalid', __('The suggested publishing destination is invalid.', 'smartcloud-static-publisher'), array('status' => 400));
+        }
+        $stage = 'lock';
+        try {
+            $result = $this->plugin->withQueueMutationLock(function () use ($target, $reviewedRows, &$stage) {
+                $current = $this->plugin->getConfig();
+                $rows = $this->deploymentCandidateRows($current, $target);
+                if ($reviewedRows !== null && $reviewedRows !== $rows) {
+                    return new \WP_Error('publisher_candidate_conflict', __('The publishing destination changed. Review the current values before saving.', 'smartcloud-static-publisher'), array('status' => 409));
+                }
+                if (!$rows) return true;
+                $current['targetOrigin'] = $target['targetOrigin'];
+                foreach (array('bucket', 'prefix', 'region') as $key) {
+                    if ($key === 'prefix' && rtrim((string) ($current['s3']['prefix'] ?? ''), '/') === $target['prefix']) {
+                        continue;
+                    }
+                    $current['s3'][$key] = $target[$key];
+                }
+                $current['cloudFront']['distributionId'] = $target['distributionId'];
+                $this->persistConfigLocked($current, $stage);
+                return true;
+            });
+            return $result;
+        } catch (\Throwable $error) {
+            $failure = $this->saveFailureResponse($error, $stage);
+            return new \WP_Error('publisher_candidate_save_failed', $failure->get_data()['message'], array('status' => $failure->get_status()));
+        }
+    }
+
+    private static function deploymentCandidateTarget(array $fields): ?array
+    {
+        $patterns = array(
+            'targetOrigin' => '~^https://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$~D',
+            'bucket' => '/^(?!\d+\.\d+\.\d+\.\d+$)[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/D',
+            'prefix' => '~^[a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)*$~D',
+            'region' => '/^[a-z]{2}(?:-[a-z]+)+-[0-9]+$/D',
+            'distributionId' => '/^E[A-Z0-9]{1,30}$/D',
+        );
+        $target = array();
+        foreach ($patterns as $key => $pattern) {
+            $value = $fields[$key] ?? null;
+            if (!is_string($value) || strlen($value) > 256 || !preg_match($pattern, $value)) return null;
+            $target[$key] = $value;
+        }
+        if (array_intersect(array('.', '..'), explode('/', $target['prefix']))) return null;
+        return $target;
+    }
+
+    private function deploymentCandidateRows(array $current, array $target): array
+    {
+        $values = array(
+            'targetOrigin' => array(__('Target origin', 'smartcloud-static-publisher'), $current['targetOrigin'] ?? ''),
+            'bucket' => array(__('S3 bucket', 'smartcloud-static-publisher'), $current['s3']['bucket'] ?? ''),
+            'prefix' => array(__('S3 prefix', 'smartcloud-static-publisher'), $current['s3']['prefix'] ?? ''),
+            'region' => array(__('S3 region', 'smartcloud-static-publisher'), $current['s3']['region'] ?? ''),
+            'distributionId' => array(__('CloudFront distribution ID', 'smartcloud-static-publisher'), $current['cloudFront']['distributionId'] ?? ''),
+        );
+        $rows = array();
+        foreach ($values as $key => [$label, $saved]) {
+            $comparable = $key === 'prefix' && is_string($saved) ? rtrim($saved, '/') : $saved;
+            if ($comparable !== $target[$key]) {
+                $rows[] = array('key' => $key, 'label' => $label, 'current' => $saved, 'proposed' => $target[$key]);
+            }
+        }
+        return $rows;
+    }
+
     public function handleSaveConfig(WP_REST_Request $request): WP_REST_Response
     {
         $stage = 'lock';
@@ -452,9 +552,13 @@ var WpSuite = (typeof globalThis !== "undefined" ? globalThis : window).WpSuite;
 
     private function saveConfigLocked(WP_REST_Request $request, ?string &$stage = null): WP_REST_Response
     {
-        $stage = 'sanitize';
         $payload = $request->get_json_params();
-        $data = is_array($payload) ? $payload : array();
+        return $this->persistConfigLocked(is_array($payload) ? $payload : array(), $stage);
+    }
+
+    private function persistConfigLocked(array $data, ?string &$stage): WP_REST_Response
+    {
+        $stage = 'sanitize';
         $config = $this->plugin->sanitizeConfig($data);
         $resolvedConfig = $this->plugin->getResolvedConfig($config);
 
